@@ -70,6 +70,9 @@ export async function compressImageFile(
   });
 }
 
+const FALLBACK_API_BASE =
+  'https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app';
+
 export async function uploadAttachment(
   fileOrBlob: Blob,
   fileName: string,
@@ -79,18 +82,37 @@ export async function uploadAttachment(
   if (!user) throw new Error('You must be signed in to upload files.');
   const token = await user.getIdToken();
 
-  const res = await fetch('/api/upload', {
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'X-File-Name': fileName,
+    'X-File-Type': mimeType,
+    'Content-Type': 'application/octet-stream',
+  };
+
+  let res = await fetch('/api/upload', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'X-File-Name': fileName,
-      'X-File-Type': mimeType,
-      'Content-Type': 'application/octet-stream',
-    },
+    headers,
     body: fileOrBlob,
   });
 
+  if (
+    res.status === 404 &&
+    typeof window !== 'undefined' &&
+    window.location.hostname === 'localhost'
+  ) {
+    res = await fetch(`${FALLBACK_API_BASE}/api/upload`, {
+      method: 'POST',
+      headers,
+      body: fileOrBlob,
+    });
+  }
+
   if (!res.ok) {
+    if (res.status === 404) {
+      throw new Error(
+        'Media upload requires publishing the web backend via Share/Deploy. Text messaging and Audio/Video calls work immediately.'
+      );
+    }
     const err = (await res.json().catch(() => ({ error: 'Upload failed' }))) as { error?: string };
     throw new Error(err.error || 'Upload failed');
   }

@@ -132,6 +132,21 @@ const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '1mb' }));
 
+// Allow Android bundled WebView (http://localhost:*) to reach /api/upload and /api/ice-servers
+app.use(['/api/upload', '/api/ice-servers'], (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-File-Name, X-File-Type');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  }
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
+
 // ICE Server configuration (STUN + optional TURN from environment variables)
 app.get('/api/ice-servers', (_req, res) => {
   const iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [
@@ -345,8 +360,8 @@ app.get('/api/android-releases', async (req, res) => {
 
   res.json({
     packageName: 'com.claro.messenger',
-    versionName: '1.0.0',
-    versionCode: 1,
+    versionName: '1.0.1',
+    versionCode: 2,
     minSdk: 24,
     targetSdk: 35,
     apkReady: fs.existsSync(apkPath),
@@ -372,7 +387,7 @@ app.get('/api/download-apk', async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.0.apk"');
+  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.1.apk"');
   res.sendFile(apkPath);
 });
 
@@ -392,7 +407,7 @@ app.get('/api/download-aab', async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.0.aab"');
+  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.1.aab"');
   res.sendFile(aabPath);
 });
 

@@ -129,8 +129,9 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
     }
   };
 
-  const formatKb = (bytes?: number) => {
+  const formatSize = (bytes?: number) => {
     if (!bytes) return '';
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
     return `${(bytes / 1024).toFixed(1)} KB`;
   };
 
@@ -146,7 +147,7 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
                 Claro Android (.APK) &amp; Google Play Store (.AAB) Downloads
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Compiled &amp; signed directly on this server ({releaseInfo?.packageName || 'com.claro.messenger'} · v{releaseInfo?.versionName || '1.0.0'} · Target SDK {releaseInfo?.targetSdk || 35})
+                Self-contained app bundle compiled &amp; signed on this server ({releaseInfo?.packageName || 'com.claro.messenger'} · v{releaseInfo?.versionName || '1.0.1'} · Target SDK {releaseInfo?.targetSdk || 35})
               </p>
             </div>
           </div>
@@ -179,27 +180,27 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
                   </div>
                   {releaseInfo?.apkSizeBytes ? (
                     <span className="text-[11px] font-mono text-slate-500">
-                      {formatKb(releaseInfo.apkSizeBytes)}
+                      {formatSize(releaseInfo.apkSizeBytes)}
                     </span>
                   ) : null}
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
-                  Signed installable Android package (<span className="font-mono">claro-v1.0.0.apk</span>). Install directly on any Android phone (Android 7.0+) with full Camera, Mic, WebRTC Video/Audio Calls &amp; File Upload support.
+                  Self-contained installable Android package (<span className="font-mono">claro-v1.0.1.apk</span>) with full bundled UI, Firebase Auth/Firestore, WebRTC HD Video/Audio Calls &amp; local loopback server (zero 404 errors).
                 </p>
               </div>
               <button
                 type="button"
                 disabled={downloadingType !== null}
                 onClick={() =>
-                  void triggerBinaryDownload('/api/download-apk', 'claro-v1.0.0.apk', 'apk')
+                  void triggerBinaryDownload('/api/download-apk', 'claro-v1.0.1.apk', 'apk')
                 }
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
               >
                 <Download className="w-4 h-4" />
                 <span>
                   {downloadingType === 'apk'
-                    ? 'Downloading claro-v1.0.0.apk...'
-                    : 'Download APK (claro-v1.0.0.apk)'}
+                    ? 'Downloading claro-v1.0.1.apk...'
+                    : 'Download APK (claro-v1.0.1.apk)'}
                 </span>
               </button>
             </div>
@@ -214,27 +215,27 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
                   </div>
                   {releaseInfo?.aabSizeBytes ? (
                     <span className="text-[11px] font-mono text-slate-500">
-                      {formatKb(releaseInfo.aabSizeBytes)}
+                      {formatSize(releaseInfo.aabSizeBytes)}
                     </span>
                   ) : null}
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
-                  Signed Android App Bundle (<span className="font-mono">claro-v1.0.0.aab</span>) validated with Google <span className="font-mono">bundletool</span> (Target SDK 35). Upload directly inside Google Play Console.
+                  Signed Android App Bundle (<span className="font-mono">claro-v1.0.1.aab</span>) validated with Google <span className="font-mono">bundletool</span> (Target SDK 35). Upload directly inside Google Play Console.
                 </p>
               </div>
               <button
                 type="button"
                 disabled={downloadingType !== null}
                 onClick={() =>
-                  void triggerBinaryDownload('/api/download-aab', 'claro-v1.0.0.aab', 'aab')
+                  void triggerBinaryDownload('/api/download-aab', 'claro-v1.0.1.aab', 'aab')
                 }
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
               >
                 <Download className="w-4 h-4" />
                 <span>
                   {downloadingType === 'aab'
-                    ? 'Downloading claro-v1.0.0.aab...'
-                    : 'Download Play Store AAB (claro-v1.0.0.aab)'}
+                    ? 'Downloading claro-v1.0.1.aab...'
+                    : 'Download Play Store AAB (claro-v1.0.1.aab)'}
                 </span>
               </button>
             </div>
