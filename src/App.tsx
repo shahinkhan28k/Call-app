@@ -159,6 +159,13 @@ export default function App() {
   const androidForegroundRef = useRef<boolean>(true);
   const showOnlineStatusRef = useRef<boolean>(true);
   const [presenceNow, setPresenceNow] = useState<number>(() => Date.now());
+  const contactsRef = useRef<ContactDoc[]>(contacts);
+  const peerProfilesRef = useRef<Record<string, UserDirectoryEntry>>(peerProfiles);
+  const searchCacheRef = useRef<
+    Map<string, { ts: number; results: UserDirectoryEntry[]; matchedSelf: boolean }>
+  >(new Map());
+  contactsRef.current = contacts;
+  peerProfilesRef.current = peerProfiles;
 
   // Apply Dark/Light Theme class to <html>
   useEffect(() => {
@@ -659,6 +666,57 @@ export default function App() {
     };
   }, [firebaseUser]);
 
+  // Instant synchronous local match for already-known contacts / peers
+  const matchLocalKnownUsers = useCallback(
+    (rawQuery: string): UserDirectoryEntry[] => {
+      if (!firebaseUser) return [];
+      const cleaned = rawQuery.trim().replace(/^@/, '');
+      const qLower = cleaned.toLowerCase();
+      const pureDigits = cleaned.replace(/[^0-9]/g, '');
+      if (qLower.length < 2 && pureDigits.length < 6) return [];
+
+      const nowMs = Date.now();
+      const seen = new Set<string>();
+      const localMatches: UserDirectoryEntry[] = [];
+
+      const checkPeer = (p?: UserDirectoryEntry) => {
+        if (!p || p.uid === firebaseUser.uid || p.accountStatus !== 'active' || seen.has(p.uid)) {
+          return;
+        }
+        const emailLower = (p.discoverableEmail || '').toLowerCase();
+        const phoneDigits = (p.discoverablePhone || '').replace(/[^0-9]/g, '');
+        const digitTail = pureDigits.startsWith('0') ? pureDigits.slice(1) : pureDigits;
+        const matchesText =
+          qLower.length >= 2 &&
+          (p.fullName.toLowerCase().includes(qLower) ||
+            p.usernameLower.includes(qLower) ||
+            (emailLower && emailLower.includes(qLower)));
+        const matchesPhone =
+          pureDigits.length >= 6 &&
+          phoneDigits.length >= 6 &&
+          (phoneDigits.includes(pureDigits) || (digitTail.length >= 6 && phoneDigits.includes(digitTail)));
+
+        if (matchesText || matchesPhone) {
+          seen.add(p.uid);
+          localMatches.push({
+            ...p,
+            onlineStatus: resolveActiveStatus(p.onlineStatus, p.lastSeen, nowMs),
+          });
+        }
+      };
+
+      for (const c of contactsRef.current) {
+        checkPeer(peerProfilesRef.current[c.contactUserId]);
+      }
+      for (const p of Object.values(peerProfilesRef.current)) {
+        checkPeer(p);
+      }
+
+      return localMatches;
+    },
+    [firebaseUser]
+  );
+
   // Targeted privacy-preserving search (only returns matching accounts; never lists all registered users)
   const searchUsersByQuery = useCallback(
     async (
@@ -671,12 +729,31 @@ export default function App() {
       const pureDigits = strippedPhone.replace(/[^0-9]/g, '');
 
       const isPhoneQuery = pureDigits.length >= 6;
+      const isPurePhoneInput = isPhoneQuery && /^[\d+\s\-().]+$/.test(cleaned);
+      const isEmailInput = qLower.includes('@');
       const isTextQuery = qLower.length >= 2;
       if (!isTextQuery && !isPhoneQuery) {
         return { results: [], matchedSelf: false, error: null };
       }
 
+      const cached = searchCacheRef.current.get(qLower);
+      if (cached && Date.now() - cached.ts < 15_000) {
+        const nowMs = Date.now();
+        return {
+          results: cached.results.map((item) => ({
+            ...item,
+            onlineStatus: resolveActiveStatus(item.onlineStatus, item.lastSeen, nowMs),
+          })),
+          matchedSelf: cached.matchedSelf,
+          error: null,
+        };
+      }
+
       const foundMap = new Map<string, UserDirectoryEntry>();
+      for (const localHit of matchLocalKnownUsers(rawQuery)) {
+        foundMap.set(localHit.uid, localHit);
+      }
+
       let matchedSelf = false;
       let firstError: string | null = null;
       const tasks: Array<Promise<void>> = [];
@@ -713,26 +790,25 @@ export default function App() {
           )
         );
 
-        tasks.push(
-          runDirectoryQuery(
-            query(
-              collection(db, 'userDirectory'),
-              where('discoverableEmail', '>=', qLower),
-              where('discoverableEmail', '<=', `${qLower}\uf8ff`),
-              limit(10)
+        if (!isPurePhoneInput) {
+          tasks.push(
+            runDirectoryQuery(
+              query(
+                collection(db, 'userDirectory'),
+                where('discoverableEmail', '>=', qLower),
+                where('discoverableEmail', '<=', `${qLower}\uf8ff`),
+                limit(10)
+              )
             )
-          )
-        );
+          );
+        }
 
-        if (!qLower.includes('@') && !isPhoneQuery) {
+        if (!isEmailInput && !isPhoneQuery) {
           const titleCase = cleaned
             .split(/\s+/)
             .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : ''))
             .join(' ');
-          const capFirst = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
-          const nameVariants = Array.from(new Set([cleaned, capFirst, titleCase])).filter(
-            (v) => v.length >= 2
-          );
+          const nameVariants = Array.from(new Set([cleaned, titleCase])).filter((v) => v.length >= 2);
           for (const variant of nameVariants) {
             tasks.push(
               runDirectoryQuery(
@@ -749,21 +825,15 @@ export default function App() {
       }
 
       if (isPhoneQuery) {
-        const phoneCandidateSet = new Set<string>([
-          strippedPhone,
-          pureDigits,
-          `+${pureDigits}`,
-        ]);
+        const phoneCandidateSet = new Set<string>([strippedPhone, pureDigits, `+${pureDigits}`]);
         if (pureDigits.startsWith('0') && pureDigits.length >= 7) {
           phoneCandidateSet.add(`+88${pureDigits}`);
           phoneCandidateSet.add(`88${pureDigits}`);
           phoneCandidateSet.add(`+880${pureDigits}`);
-          phoneCandidateSet.add(pureDigits.slice(1));
         }
         if (pureDigits.startsWith('880') && pureDigits.length >= 9) {
           phoneCandidateSet.add(`+${pureDigits}`);
           phoneCandidateSet.add(`0${pureDigits.slice(3)}`);
-          phoneCandidateSet.add(pureDigits.slice(3));
         }
         if (pureDigits.length === 10 && pureDigits.startsWith('1')) {
           phoneCandidateSet.add(`+880${pureDigits}`);
@@ -772,7 +842,7 @@ export default function App() {
 
         const phoneCandidates = Array.from(phoneCandidateSet)
           .filter((val) => val.length >= 6 && val.length <= 32)
-          .slice(0, 8);
+          .slice(0, 6);
 
         for (const phoneVal of phoneCandidates) {
           tasks.push(
@@ -788,38 +858,42 @@ export default function App() {
         }
       }
 
-      // Also match already-added contacts locally by full name or username
-      for (const c of contacts) {
-        const p = peerProfiles[c.contactUserId];
-        if (
-          p &&
-          p.uid !== firebaseUser.uid &&
-          (p.fullName.toLowerCase().includes(qLower) || p.usernameLower.includes(qLower))
-        ) {
-          foundMap.set(p.uid, p);
-        }
-      }
-
       await Promise.all(tasks);
       const nowMs = Date.now();
       const list = Array.from(foundMap.values()).map((item) => ({
         ...item,
         onlineStatus: resolveActiveStatus(item.onlineStatus, item.lastSeen, nowMs),
       }));
+
       if (list.length > 0) {
         setPeerProfiles((prev) => {
+          let changed = false;
+          for (const item of list) {
+            if (!prev[item.uid]) {
+              changed = true;
+              break;
+            }
+          }
+          if (!changed) return prev;
           const next = { ...prev };
-          for (const item of list) next[item.uid] = item;
+          for (const item of list) {
+            if (!next[item.uid]) next[item.uid] = item;
+          }
           return next;
         });
       }
+
+      if (!firstError) {
+        searchCacheRef.current.set(qLower, { ts: Date.now(), results: list, matchedSelf });
+      }
+
       return {
         results: list,
         matchedSelf,
         error: list.length === 0 && !matchedSelf ? firstError : null,
       };
     },
-    [contacts, firebaseUser, peerProfiles]
+    [firebaseUser, matchLocalKnownUsers]
   );
 
   useEffect(() => {
@@ -832,6 +906,10 @@ export default function App() {
       return;
     }
     let active = true;
+    const instantHits = matchLocalKnownUsers(trimmed);
+    if (instantHits.length > 0) {
+      setContactSearchResults(instantHits);
+    }
     setContactSearching(true);
     setContactSearchError(null);
     const timer = window.setTimeout(() => {
@@ -843,12 +921,12 @@ export default function App() {
           setContactSearching(false);
         }
       });
-    }, 300);
+    }, 120);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [contactSearch, searchUsersByQuery]);
+  }, [contactSearch, matchLocalKnownUsers, searchUsersByQuery]);
 
   useEffect(() => {
     if (!showNewChatModal) {
@@ -867,6 +945,10 @@ export default function App() {
       return;
     }
     let active = true;
+    const instantHits = matchLocalKnownUsers(trimmed);
+    if (instantHits.length > 0) {
+      setNewChatResults(instantHits);
+    }
     setNewChatSearching(true);
     setNewChatSearchError(null);
     const timer = window.setTimeout(() => {
@@ -878,12 +960,12 @@ export default function App() {
           setNewChatSearching(false);
         }
       });
-    }, 300);
+    }, 120);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [newChatSearch, searchUsersByQuery, showNewChatModal]);
+  }, [matchLocalKnownUsers, newChatSearch, searchUsersByQuery, showNewChatModal]);
 
   // Connect real-time WebSocket for fast typing & call signal relay
   useEffect(() => {
@@ -1070,6 +1152,7 @@ export default function App() {
       return;
     }
     setPeerProfiles((prev) => ({ ...prev, [peer.uid]: peer }));
+    setShowNewChatModal(false);
     const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const callPayload = {
       callId,
@@ -1894,11 +1977,11 @@ export default function App() {
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">
-                {contactSearching ? (
+                {contactSearching && filteredDirectory.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500">
                     Searching private directory...
                   </div>
-                ) : contactSearchError ? (
+                ) : contactSearchError && filteredDirectory.length === 0 ? (
                   <div className="p-8 text-center text-xs text-rose-600 dark:text-rose-400">
                     {contactSearchError}
                   </div>
@@ -2488,7 +2571,7 @@ export default function App() {
               />
             </div>
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {newChatSearching ? (
+              {newChatSearching && (newChatSearch.trim() ? newChatResults : knownContactsList).length === 0 ? (
                 <p className="text-xs text-slate-500 py-6 text-center">Searching...</p>
               ) : (
                 <>
@@ -2513,27 +2596,66 @@ export default function App() {
                           />
                           <div className="min-w-0">
                             <div className="text-sm font-medium truncate">{u.fullName}</div>
-                            <div className="text-xs font-mono text-slate-500 truncate">@{u.username}</div>
+                            <div className="text-xs font-mono text-slate-500 truncate">
+                              @{u.username}
+                            </div>
                           </div>
                         </button>
-                        {!isSaved && (
+                        <div className="flex items-center gap-1 shrink-0">
+                          {!isSaved && (
+                            <button
+                              type="button"
+                              onClick={() => void handleAddContact(u)}
+                              aria-label="Add contact"
+                              className="px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-white dark:hover:bg-slate-900"
+                            >
+                              Add
+                            </button>
+                          )}
                           <button
                             type="button"
-                            onClick={() => void handleAddContact(u)}
-                            className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-white dark:hover:bg-slate-900 shrink-0"
+                            onClick={() => void handleStartCall(u, 'audio')}
+                            aria-label="Audio call"
+                            title="Audio Call"
+                            className="w-8 h-8 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:text-blue-600 hover:bg-white dark:hover:bg-slate-900 flex items-center justify-center"
                           >
-                            Add
+                            <Phone className="w-3.5 h-3.5" />
                           </button>
-                        )}
+                          <button
+                            type="button"
+                            disabled={dataMode === 'text_only'}
+                            onClick={() => void handleStartCall(u, 'video')}
+                            aria-label="Video call"
+                            title={
+                              dataMode === 'text_only'
+                                ? 'Video calls paused in Text-Only Mode'
+                                : 'Video Call'
+                            }
+                            className="w-8 h-8 rounded-xl border border-slate-200 dark:border-slate-700 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 flex items-center justify-center disabled:opacity-40"
+                          >
+                            <Video className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void openOrCreateChat(u)}
+                            aria-label="Message"
+                            title="Message"
+                            className="w-8 h-8 rounded-xl bg-blue-600 text-white hover:bg-blue-700 flex items-center justify-center"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
-                  {newChatSearchError && (
-                    <p className="text-xs text-rose-600 dark:text-rose-400 py-4 text-center">
-                      {newChatSearchError}
-                    </p>
-                  )}
+                  {newChatSearchError &&
+                    (newChatSearch.trim() ? newChatResults : knownContactsList).length === 0 && (
+                      <p className="text-xs text-rose-600 dark:text-rose-400 py-4 text-center">
+                        {newChatSearchError}
+                      </p>
+                    )}
                   {!newChatSearchError &&
+                    !newChatSearching &&
                     (newChatSearch.trim() ? newChatResults : knownContactsList).length === 0 && (
                       <p className="text-xs text-slate-500 py-6 text-center">
                         {newChatSearch.trim()

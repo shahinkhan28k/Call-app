@@ -365,8 +365,8 @@ app.get('/api/android-releases', async (req, res) => {
 
   res.json({
     packageName: 'com.claro.messenger',
-    versionName: '1.0.7',
-    versionCode: 8,
+    versionName: '1.0.8',
+    versionCode: 9,
     minSdk: 24,
     targetSdk: 35,
     apkReady: fs.existsSync(apkPath),
@@ -392,7 +392,7 @@ app.get('/api/download-apk', async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.7.apk"');
+  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.8.apk"');
   res.sendFile(apkPath);
 });
 
@@ -412,7 +412,7 @@ app.get('/api/download-aab', async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.7.aab"');
+  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.8.aab"');
   res.sendFile(aabPath);
 });
 
