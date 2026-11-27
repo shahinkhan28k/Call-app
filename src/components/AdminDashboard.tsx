@@ -163,7 +163,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUid, onEx
 
   const activeUsersCount = users.filter((u) => u.accountStatus === 'active').length;
   const suspendedUsersCount = users.filter((u) => u.accountStatus === 'suspended').length;
-  const onlineNowCount = users.filter((u) => u.onlineStatus === 'online').length;
+  const onlineNowCount = users.filter((u) => {
+    if (u.onlineStatus !== 'online') return false;
+    const ms = u.lastSeen?.toMillis?.();
+    return !ms || Date.now() - ms <= 70_000;
+  }).length;
   const pendingReportsCount = reports.filter((r) => r.status === 'pending').length;
 
   return (

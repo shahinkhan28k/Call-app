@@ -10,8 +10,8 @@
   "startUrl": "/",
   "iconUrl": "https://claro-calls.onrender.com/pwa-512x512.png",
   "maskableIconUrl": "https://claro-calls.onrender.com/pwa-maskable-512x512.png",
-  "appVersionName": "1.0.5",
-  "appVersionCode": 6,
+  "appVersionName": "1.0.6",
+  "appVersionCode": 7,
   "shortcuts": [],
   "generatorApp": "bubblewrap-cli"
 }

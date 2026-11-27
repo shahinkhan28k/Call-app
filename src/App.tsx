@@ -60,6 +60,7 @@ import type {
   ContactDoc,
   DataMode,
   NotificationDoc,
+  OnlineStatus,
   UserDirectoryEntry,
   UserPrivate,
 } from './types';
@@ -76,6 +77,20 @@ function sanitizeUsername(raw: string, uid: string): string {
   const cleaned = raw.replace(/[^a-zA-Z0-9_.]/g, '').slice(0, 30);
   if (cleaned.length >= 2) return cleaned;
   return `user_${uid.slice(0, 6)}`;
+}
+
+const PRESENCE_STALE_MS = 70_000;
+
+function resolveActiveStatus(
+  onlineStatus?: OnlineStatus,
+  lastSeen?: Timestamp,
+  nowMs: number = Date.now(),
+  allowShow: boolean = true
+): OnlineStatus {
+  if (!allowShow || onlineStatus !== 'online') return 'offline';
+  const ts = lastSeen?.toMillis?.();
+  if (!ts) return 'online';
+  return nowMs - ts <= PRESENCE_STALE_MS ? 'online' : 'offline';
 }
 
 export default function App() {
@@ -132,10 +147,13 @@ export default function App() {
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
 
-  // WebSocket state
+  // WebSocket & presence refs
   const wsRef = useRef<WebSocket | null>(null);
   const [wsTypingMap, setWsTypingMap] = useState<Record<string, boolean>>({});
   const profilePicInputRef = useRef<HTMLInputElement | null>(null);
+  const androidForegroundRef = useRef<boolean>(true);
+  const showOnlineStatusRef = useRef<boolean>(true);
+  const [presenceNow, setPresenceNow] = useState<number>(() => Date.now());
 
   // Apply Dark/Light Theme class to <html>
   useEffect(() => {
@@ -234,21 +252,51 @@ export default function App() {
           });
         } else {
           const existing = snap.data() as UserPrivate;
+          const isAppActiveNow =
+            document.visibilityState === 'visible' &&
+            navigator.onLine !== false &&
+            androidForegroundRef.current;
+          const initialOnline: OnlineStatus =
+            isAppActiveNow && existing.showOnlineStatus !== false ? 'online' : 'offline';
+
           await updateDoc(userRef, {
-            onlineStatus: existing.showOnlineStatus === false ? 'offline' : 'online',
+            onlineStatus: initialOnline,
             lastSeen: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
-          await updateDoc(dirRef, {
-            onlineStatus: existing.showOnlineStatus === false ? 'offline' : 'online',
-            lastSeen: serverTimestamp(),
-            discoverableEmail:
-              existing.showEmail !== false ? (existing.email || firebaseUser.email || '').toLowerCase() : '',
-            discoverablePhone:
-              existing.showPhone !== false ? existing.phoneNumber || firebaseUser.phoneNumber || '' : '',
-            publicKeyJwk: keyResult.publicKeyJwkString,
-            updatedAt: serverTimestamp(),
-          });
+
+          const dirSnap = await getDoc(dirRef);
+          if (!dirSnap.exists()) {
+            await setDoc(dirRef, {
+              uid: firebaseUser.uid,
+              fullName: existing.fullName || firebaseUser.displayName || 'Claro User',
+              username: existing.username,
+              usernameLower: existing.username.toLowerCase(),
+              profilePicture: existing.profilePicture || '',
+              about: existing.about || 'Available on Claro',
+              onlineStatus: initialOnline,
+              lastSeen: serverTimestamp(),
+              accountStatus: existing.accountStatus || 'active',
+              discoverableEmail:
+                existing.showEmail !== false ? (existing.email || firebaseUser.email || '').toLowerCase() : '',
+              discoverablePhone:
+                existing.showPhone !== false ? existing.phoneNumber || firebaseUser.phoneNumber || '' : '',
+              publicKeyJwk: keyResult.publicKeyJwkString,
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            });
+          } else {
+            await updateDoc(dirRef, {
+              onlineStatus: initialOnline,
+              lastSeen: serverTimestamp(),
+              discoverableEmail:
+                existing.showEmail !== false ? (existing.email || firebaseUser.email || '').toLowerCase() : '',
+              discoverablePhone:
+                existing.showPhone !== false ? existing.phoneNumber || firebaseUser.phoneNumber || '' : '',
+              publicKeyJwk: keyResult.publicKeyJwkString,
+              updatedAt: serverTimestamp(),
+            });
+          }
         }
 
         // Check and persist admin authorization
@@ -271,21 +319,107 @@ export default function App() {
       }
     })();
 
-    const handleBeforeUnload = () => {
-      if (firebaseUser) {
-        void updateDoc(doc(db, 'userDirectory', firebaseUser.uid), {
-          onlineStatus: 'offline',
-          lastSeen: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       cancelled = true;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, [firebaseUser, isVerifiedSession, pendingMeta]);
+
+  useEffect(() => {
+    showOnlineStatusRef.current = userProfile?.showOnlineStatus !== false;
+  }, [userProfile?.showOnlineStatus]);
+
+  // Real-time Online / Offline presence: Online strictly while actively using the app, Offline when away/closed
+  useEffect(() => {
+    if (!firebaseUser || !isVerifiedSession) return;
+    const uid = firebaseUser.uid;
+    let lastWrittenStatus: OnlineStatus | null = null;
+    let lastOnlineWriteAt = 0;
+
+    const writePresence = (shouldBeOnline: boolean, forceHeartbeat = false) => {
+      const nextStatus: OnlineStatus =
+        shouldBeOnline && showOnlineStatusRef.current ? 'online' : 'offline';
+      const now = Date.now();
+      if (
+        nextStatus === 'online' &&
+        lastWrittenStatus === 'online' &&
+        !forceHeartbeat &&
+        now - lastOnlineWriteAt < 15_000
+      ) {
+        return;
+      }
+      if (nextStatus === 'offline' && lastWrittenStatus === 'offline' && !forceHeartbeat) {
+        return;
+      }
+      lastWrittenStatus = nextStatus;
+      if (nextStatus === 'online') lastOnlineWriteAt = now;
+
+      const payload = {
+        onlineStatus: nextStatus,
+        lastSeen: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      void updateDoc(doc(db, 'userDirectory', uid), payload).catch(() => {});
+      void updateDoc(doc(db, 'users', uid), payload).catch(() => {});
+    };
+
+    const syncActivity = (forceOffline = false, forceHeartbeat = false) => {
+      const activeNow =
+        !forceOffline &&
+        document.visibilityState === 'visible' &&
+        navigator.onLine !== false &&
+        androidForegroundRef.current;
+      writePresence(activeNow, forceHeartbeat);
+    };
+
+    const onVisibilityChange = () => syncActivity(document.visibilityState !== 'visible');
+    const onFocus = () => syncActivity(false);
+    const onOnline = () => syncActivity(false);
+    const onOffline = () => syncActivity(true);
+    const onPageHide = () => syncActivity(true);
+
+    window.__onClaroAndroidVisibilityChange = (inForeground: boolean) => {
+      androidForegroundRef.current = inForeground;
+      syncActivity(!inForeground, true);
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
+
+    // Sync immediately on session mount
+    syncActivity(false, true);
+
+    // Keep lastSeen fresh every 30s while actively using the app; refresh peer staleness clock every 20s
+    const heartbeatTimer = window.setInterval(() => {
+      if (
+        document.visibilityState === 'visible' &&
+        navigator.onLine !== false &&
+        androidForegroundRef.current
+      ) {
+        syncActivity(false, true);
+      }
+    }, 30_000);
+
+    const stalenessTimer = window.setInterval(() => {
+      setPresenceNow(Date.now());
+    }, 20_000);
+
+    return () => {
+      window.clearInterval(heartbeatTimer);
+      window.clearInterval(stalenessTimer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
+      window.__onClaroAndroidVisibilityChange = undefined;
+      syncActivity(true, true);
+    };
+  }, [firebaseUser, isVerifiedSession]);
 
   // Keep Android background keep-alive foreground service aligned with signed-in session
   useEffect(() => {
@@ -608,7 +742,11 @@ export default function App() {
       }
 
       await Promise.all(tasks);
-      const list = Array.from(foundMap.values());
+      const nowMs = Date.now();
+      const list = Array.from(foundMap.values()).map((item) => ({
+        ...item,
+        onlineStatus: resolveActiveStatus(item.onlineStatus, item.lastSeen, nowMs),
+      }));
       if (list.length > 0) {
         setPeerProfiles((prev) => {
           const next = { ...prev };
@@ -750,10 +888,13 @@ export default function App() {
   const directoryByUid = useMemo(() => {
     const map = new Map<string, UserDirectoryEntry>();
     for (const [uid, entry] of Object.entries(peerProfiles)) {
-      map.set(uid, entry);
+      map.set(uid, {
+        ...entry,
+        onlineStatus: resolveActiveStatus(entry.onlineStatus, entry.lastSeen, presenceNow),
+      });
     }
     return map;
-  }, [peerProfiles]);
+  }, [peerProfiles, presenceNow]);
 
   const blockedSet = useMemo(() => new Set(blockedUsers.map((b) => b.blockedUserId)), [blockedUsers]);
   const contactSet = useMemo(() => new Set(contacts.map((c) => c.contactUserId)), [contacts]);
@@ -1015,10 +1156,24 @@ export default function App() {
         const showEmail = key === 'showEmail' ? nextVal : Boolean(userProfile.showEmail);
         const showPhone = key === 'showPhone' ? nextVal : Boolean(userProfile.showPhone);
         const showOnline = key === 'showOnlineStatus' ? nextVal : userProfile.showOnlineStatus !== false;
+        const isActiveNow =
+          document.visibilityState === 'visible' &&
+          navigator.onLine !== false &&
+          androidForegroundRef.current;
+        const resolvedStatus: OnlineStatus = showOnline && isActiveNow ? 'online' : 'offline';
+        if (key === 'showOnlineStatus') {
+          showOnlineStatusRef.current = nextVal;
+          await updateDoc(doc(db, 'users', firebaseUser.uid), {
+            onlineStatus: resolvedStatus,
+            lastSeen: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        }
         await updateDoc(doc(db, 'userDirectory', firebaseUser.uid), {
           discoverableEmail: showEmail ? (userProfile.email || '').toLowerCase() : '',
           discoverablePhone: showPhone ? userProfile.phoneNumber || '' : '',
-          onlineStatus: showOnline ? 'online' : 'offline',
+          onlineStatus: resolvedStatus,
+          lastSeen: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
       }
@@ -1059,11 +1214,15 @@ export default function App() {
 
   const handleLogout = async () => {
     if (firebaseUser) {
-      await updateDoc(doc(db, 'userDirectory', firebaseUser.uid), {
+      const offlinePayload = {
         onlineStatus: 'offline',
         lastSeen: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      }).catch(() => {});
+      };
+      await Promise.all([
+        updateDoc(doc(db, 'userDirectory', firebaseUser.uid), offlinePayload).catch(() => {}),
+        updateDoc(doc(db, 'users', firebaseUser.uid), offlinePayload).catch(() => {}),
+      ]);
     }
     await signOut(auth);
   };
@@ -1227,7 +1386,12 @@ export default function App() {
               name={userProfile?.fullName || 'Me'}
               src={userProfile?.profilePicture}
               size="sm"
-              onlineStatus={userProfile?.onlineStatus}
+              onlineStatus={resolveActiveStatus(
+                userProfile?.onlineStatus,
+                userProfile?.lastSeen,
+                presenceNow,
+                userProfile?.showOnlineStatus !== false
+              )}
               showPresence={userProfile?.showOnlineStatus !== false}
             />
           </button>
@@ -1754,8 +1918,13 @@ export default function App() {
                     name={userProfile?.fullName || 'User'}
                     src={userProfile?.profilePicture}
                     size="lg"
-                    onlineStatus={userProfile?.onlineStatus}
-                    showPresence
+                    onlineStatus={resolveActiveStatus(
+                      userProfile?.onlineStatus,
+                      userProfile?.lastSeen,
+                      presenceNow,
+                      userProfile?.showOnlineStatus !== false
+                    )}
+                    showPresence={userProfile?.showOnlineStatus !== false}
                   />
                   <input
                     ref={profilePicInputRef}

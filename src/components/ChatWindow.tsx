@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   collection,
   doc,
+  getDoc,
   onSnapshot,
   query,
   serverTimestamp,
@@ -120,6 +121,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
 
   // Subscribe to messages for this chat
   useEffect(() => {
+    setReplyTarget(null);
+    setEditingMsg(null);
+    setUploadError(null);
     const q = query(
       collection(db, 'chats', chat.chatId, 'messages'),
       where('participantIds', 'array-contains', currentUid)
@@ -175,7 +179,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         unreadA: isParticipantA ? 0 : chat.unreadA,
         unreadB: isParticipantA ? chat.unreadB : 0,
         updatedAt: serverTimestamp(),
-      });
+      }).catch(() => {});
     }
 
     if (!currentUserProfile.readReceipts) return;
@@ -187,7 +191,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
         deliveryStatus: 'read',
         readStatus: true,
         updatedAt: serverTimestamp(),
-      });
+      }).catch(() => {});
     }
   }, [
     chat.chatId,
@@ -222,7 +226,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
       typingA: isParticipantA ? typing : chat.typingA,
       typingB: isParticipantA ? chat.typingB : typing,
       updatedAt: serverTimestamp(),
-    });
+    }).catch(() => {});
   };
 
   const handleComposerChange = (val: string) => {
@@ -496,9 +500,16 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     const bodyText = getDisplayText(forwardingMsg);
 
     try {
-      await setDoc(
-        doc(db, 'chats', targetChatId),
-        {
+      const targetChatRef = doc(db, 'chats', targetChatId);
+      let chatExists = false;
+      try {
+        const snap = await getDoc(targetChatRef);
+        chatExists = snap.exists();
+      } catch {
+        // Proceed to create if check fails
+      }
+      if (!chatExists) {
+        await setDoc(targetChatRef, {
           chatId: targetChatId,
           participantIds: [pA, pB],
           participantA: pA,
@@ -510,9 +521,8 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
           isE2EE: true,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+        });
+      }
 
       await setDoc(doc(db, 'chats', targetChatId, 'messages', messageId), {
         messageId,

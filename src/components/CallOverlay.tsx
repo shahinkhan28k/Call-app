@@ -188,9 +188,11 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
       });
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = remoteStream;
+        void remoteVideoRef.current.play().catch(() => {});
       }
       if (remoteAudioRef.current) {
         remoteAudioRef.current.srcObject = remoteStream;
+        void remoteAudioRef.current.play().catch(() => {});
       }
     };
 

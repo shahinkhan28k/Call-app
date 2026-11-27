@@ -50,6 +50,7 @@ declare global {
     __onClaroAndroidAccountResult?: (result: AndroidBridgeResult) => void;
     __onClaroAndroidUploadResult?: (uploadId: string, status: number, body: string) => void;
     __onClaroAndroidCallAction?: (callId: string, action: 'answer' | 'decline') => void;
+    __onClaroAndroidVisibilityChange?: (inForeground: boolean) => void;
   }
 }
 
