@@ -132,9 +132,13 @@ export default function App() {
   const [contactSearch, setContactSearch] = useState('');
   const [contactSearchResults, setContactSearchResults] = useState<UserDirectoryEntry[]>([]);
   const [contactSearching, setContactSearching] = useState(false);
+  const [contactSearchError, setContactSearchError] = useState<string | null>(null);
+  const [contactSelfMatched, setContactSelfMatched] = useState(false);
   const [newChatSearch, setNewChatSearch] = useState('');
   const [newChatResults, setNewChatResults] = useState<UserDirectoryEntry[]>([]);
   const [newChatSearching, setNewChatSearching] = useState(false);
+  const [newChatSearchError, setNewChatSearchError] = useState<string | null>(null);
+  const [newChatSelfMatched, setNewChatSelfMatched] = useState(false);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const notifiedCallIdsRef = useRef<Set<string>>(new Set());
@@ -142,6 +146,7 @@ export default function App() {
   // Settings form state
   const [editFullName, setEditFullName] = useState('');
   const [editUsername, setEditUsername] = useState('');
+  const [editPhoneNumber, setEditPhoneNumber] = useState('');
   const [editAbout, setEditAbout] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
@@ -286,7 +291,14 @@ export default function App() {
               updatedAt: serverTimestamp(),
             });
           } else {
+            const syncedUsername = sanitizeUsername(
+              existing.username || `user_${firebaseUser.uid.slice(0, 6)}`,
+              firebaseUser.uid
+            );
             await updateDoc(dirRef, {
+              fullName: existing.fullName || firebaseUser.displayName || 'Claro User',
+              username: syncedUsername,
+              usernameLower: syncedUsername.toLowerCase(),
               onlineStatus: initialOnline,
               lastSeen: serverTimestamp(),
               discoverableEmail:
@@ -439,6 +451,7 @@ export default function App() {
           setUserProfile(p);
           setEditFullName(p.fullName);
           setEditUsername(p.username);
+          setEditPhoneNumber(p.phoneNumber || '');
           setEditAbout(p.about || '');
           if (!localStorage.getItem('claro_data_mode') && p.lowDataMode) {
             setDataMode('saver');
@@ -648,88 +661,134 @@ export default function App() {
 
   // Targeted privacy-preserving search (only returns matching accounts; never lists all registered users)
   const searchUsersByQuery = useCallback(
-    async (rawQuery: string): Promise<UserDirectoryEntry[]> => {
-      if (!firebaseUser) return [];
+    async (
+      rawQuery: string
+    ): Promise<{ results: UserDirectoryEntry[]; matchedSelf: boolean; error: string | null }> => {
+      if (!firebaseUser) return { results: [], matchedSelf: false, error: null };
       const cleaned = rawQuery.trim().replace(/^@/, '');
       const qLower = cleaned.toLowerCase();
-      const digitsOnly = cleaned.replace(/[^0-9+]/g, '');
+      const strippedPhone = cleaned.replace(/[\s\-().]/g, '');
+      const pureDigits = strippedPhone.replace(/[^0-9]/g, '');
 
-      const isEmailQuery = qLower.includes('@') && qLower.includes('.');
-      const isPhoneQuery = digitsOnly.length >= 6;
-      if (qLower.length < 3 && !isEmailQuery && !isPhoneQuery) {
-        return [];
+      const isPhoneQuery = pureDigits.length >= 6;
+      const isTextQuery = qLower.length >= 2;
+      if (!isTextQuery && !isPhoneQuery) {
+        return { results: [], matchedSelf: false, error: null };
       }
 
       const foundMap = new Map<string, UserDirectoryEntry>();
+      let matchedSelf = false;
+      let firstError: string | null = null;
       const tasks: Array<Promise<void>> = [];
 
-      if (qLower.length >= 3) {
-        const usernameQ = query(
-          collection(db, 'userDirectory'),
-          where('usernameLower', '>=', qLower),
-          where('usernameLower', '<=', `${qLower}\uf8ff`),
-          limit(10)
-        );
-        tasks.push(
-          getDocs(usernameQ)
-            .then((snap) => {
-              snap.docs.forEach((d) => {
-                const entry = d.data() as UserDirectoryEntry;
-                if (entry.uid !== firebaseUser.uid && entry.accountStatus === 'active') {
-                  foundMap.set(entry.uid, entry);
-                }
-              });
-            })
-            .catch(() => {})
-        );
-      }
+      const runDirectoryQuery = (qRef: ReturnType<typeof query>) =>
+        getDocs(qRef)
+          .then((snap) => {
+            snap.docs.forEach((d) => {
+              const entry = d.data() as UserDirectoryEntry;
+              if (entry.uid === firebaseUser.uid) {
+                matchedSelf = true;
+                return;
+              }
+              if (entry.accountStatus === 'active') {
+                foundMap.set(entry.uid, entry);
+              }
+            });
+          })
+          .catch((err: unknown) => {
+            if (!firstError) {
+              firstError = err instanceof Error ? err.message : 'Search failed. Please try again.';
+            }
+          });
 
-      if (isEmailQuery) {
-        const emailQ = query(
-          collection(db, 'userDirectory'),
-          where('discoverableEmail', '==', qLower),
-          limit(5)
-        );
+      if (isTextQuery) {
         tasks.push(
-          getDocs(emailQ)
-            .then((snap) => {
-              snap.docs.forEach((d) => {
-                const entry = d.data() as UserDirectoryEntry;
-                if (entry.uid !== firebaseUser.uid && entry.accountStatus === 'active') {
-                  foundMap.set(entry.uid, entry);
-                }
-              });
-            })
-            .catch(() => {})
+          runDirectoryQuery(
+            query(
+              collection(db, 'userDirectory'),
+              where('usernameLower', '>=', qLower),
+              where('usernameLower', '<=', `${qLower}\uf8ff`),
+              limit(10)
+            )
+          )
         );
+
+        tasks.push(
+          runDirectoryQuery(
+            query(
+              collection(db, 'userDirectory'),
+              where('discoverableEmail', '>=', qLower),
+              where('discoverableEmail', '<=', `${qLower}\uf8ff`),
+              limit(10)
+            )
+          )
+        );
+
+        if (!qLower.includes('@') && !isPhoneQuery) {
+          const titleCase = cleaned
+            .split(/\s+/)
+            .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : ''))
+            .join(' ');
+          const capFirst = cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+          const nameVariants = Array.from(new Set([cleaned, capFirst, titleCase])).filter(
+            (v) => v.length >= 2
+          );
+          for (const variant of nameVariants) {
+            tasks.push(
+              runDirectoryQuery(
+                query(
+                  collection(db, 'userDirectory'),
+                  where('fullName', '>=', variant),
+                  where('fullName', '<=', `${variant}\uf8ff`),
+                  limit(10)
+                )
+              )
+            );
+          }
+        }
       }
 
       if (isPhoneQuery) {
-        const candidates = Array.from(
-          new Set([digitsOnly, digitsOnly.startsWith('+') ? digitsOnly : `+${digitsOnly}`])
-        );
-        for (const phoneVal of candidates) {
-          const phoneQ = query(
-            collection(db, 'userDirectory'),
-            where('discoverablePhone', '==', phoneVal),
-            limit(5)
-          );
+        const phoneCandidateSet = new Set<string>([
+          strippedPhone,
+          pureDigits,
+          `+${pureDigits}`,
+        ]);
+        if (pureDigits.startsWith('0') && pureDigits.length >= 7) {
+          phoneCandidateSet.add(`+88${pureDigits}`);
+          phoneCandidateSet.add(`88${pureDigits}`);
+          phoneCandidateSet.add(`+880${pureDigits}`);
+          phoneCandidateSet.add(pureDigits.slice(1));
+        }
+        if (pureDigits.startsWith('880') && pureDigits.length >= 9) {
+          phoneCandidateSet.add(`+${pureDigits}`);
+          phoneCandidateSet.add(`0${pureDigits.slice(3)}`);
+          phoneCandidateSet.add(pureDigits.slice(3));
+        }
+        if (pureDigits.length === 10 && pureDigits.startsWith('1')) {
+          phoneCandidateSet.add(`+880${pureDigits}`);
+          phoneCandidateSet.add(`0${pureDigits}`);
+        }
+
+        const phoneCandidates = Array.from(phoneCandidateSet)
+          .filter((val) => val.length >= 6 && val.length <= 32)
+          .slice(0, 8);
+
+        for (const phoneVal of phoneCandidates) {
           tasks.push(
-            getDocs(phoneQ)
-              .then((snap) => {
-                snap.docs.forEach((d) => {
-                  const entry = d.data() as UserDirectoryEntry;
-                  if (entry.uid !== firebaseUser.uid && entry.accountStatus === 'active') {
-                    foundMap.set(entry.uid, entry);
-                  }
-                });
-              })
-              .catch(() => {})
+            runDirectoryQuery(
+              query(
+                collection(db, 'userDirectory'),
+                where('discoverablePhone', '>=', phoneVal),
+                where('discoverablePhone', '<=', `${phoneVal}\uf8ff`),
+                limit(5)
+              )
+            )
           );
         }
       }
 
-      // Also match already-added contacts locally by full name
+      // Also match already-added contacts locally by full name or username
       for (const c of contacts) {
         const p = peerProfiles[c.contactUserId];
         if (
@@ -754,7 +813,11 @@ export default function App() {
           return next;
         });
       }
-      return list;
+      return {
+        results: list,
+        matchedSelf,
+        error: list.length === 0 && !matchedSelf ? firstError : null,
+      };
     },
     [contacts, firebaseUser, peerProfiles]
   );
@@ -764,14 +827,19 @@ export default function App() {
     if (!trimmed) {
       setContactSearchResults([]);
       setContactSearching(false);
+      setContactSearchError(null);
+      setContactSelfMatched(false);
       return;
     }
     let active = true;
     setContactSearching(true);
+    setContactSearchError(null);
     const timer = window.setTimeout(() => {
-      void searchUsersByQuery(trimmed).then((res) => {
+      void searchUsersByQuery(trimmed).then(({ results, matchedSelf, error }) => {
         if (active) {
-          setContactSearchResults(res);
+          setContactSearchResults(results);
+          setContactSelfMatched(matchedSelf);
+          setContactSearchError(error);
           setContactSearching(false);
         }
       });
@@ -786,20 +854,27 @@ export default function App() {
     if (!showNewChatModal) {
       setNewChatResults([]);
       setNewChatSearching(false);
+      setNewChatSearchError(null);
+      setNewChatSelfMatched(false);
       return;
     }
     const trimmed = newChatSearch.trim();
     if (!trimmed) {
       setNewChatResults([]);
       setNewChatSearching(false);
+      setNewChatSearchError(null);
+      setNewChatSelfMatched(false);
       return;
     }
     let active = true;
     setNewChatSearching(true);
+    setNewChatSearchError(null);
     const timer = window.setTimeout(() => {
-      void searchUsersByQuery(trimmed).then((res) => {
+      void searchUsersByQuery(trimmed).then(({ results, matchedSelf, error }) => {
         if (active) {
-          setNewChatResults(res);
+          setNewChatResults(results);
+          setNewChatSelfMatched(matchedSelf);
+          setNewChatSearchError(error);
           setNewChatSearching(false);
         }
       });
@@ -1096,19 +1171,35 @@ export default function App() {
       return;
     }
 
+    const cleanPhone = editPhoneNumber.trim().replace(/[\s\-().]/g, '').slice(0, 32);
+    if (cleanPhone && !/^\+?[0-9]{6,20}$/.test(cleanPhone)) {
+      setSettingsMsg('Please enter a valid mobile number (6-20 digits, optional + prefix).');
+      return;
+    }
+
+    const shouldEnablePhone = Boolean(cleanPhone) && (Boolean(userProfile.showPhone) || !userProfile.phoneNumber);
+
     try {
       await updateProfile(firebaseUser, { displayName: cleanName });
       await updateDoc(doc(db, 'users', firebaseUser.uid), {
         fullName: cleanName,
         username: cleanUser,
+        phoneNumber: cleanPhone,
         about: editAbout.trim().slice(0, VALIDATION_LIMITS.ABOUT_MAX),
         updatedAt: serverTimestamp(),
       });
+      if (shouldEnablePhone && !userProfile.showPhone) {
+        await updateDoc(doc(db, 'users', firebaseUser.uid), {
+          showPhone: true,
+          updatedAt: serverTimestamp(),
+        });
+      }
       await updateDoc(doc(db, 'userDirectory', firebaseUser.uid), {
         fullName: cleanName,
         username: cleanUser,
         usernameLower: cleanUser.toLowerCase(),
         about: editAbout.trim().slice(0, VALIDATION_LIMITS.ABOUT_MAX),
+        discoverablePhone: shouldEnablePhone ? cleanPhone : '',
         updatedAt: serverTimestamp(),
       });
       setSettingsMsg('Profile updated.');
@@ -1807,14 +1898,19 @@ export default function App() {
                   <div className="p-8 text-center text-xs text-slate-500">
                     Searching private directory...
                   </div>
+                ) : contactSearchError ? (
+                  <div className="p-8 text-center text-xs text-rose-600 dark:text-rose-400">
+                    {contactSearchError}
+                  </div>
                 ) : filteredDirectory.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500">
                     {contactSearch.trim()
-                      ? contactSearch.trim().replace(/^@/, '').length < 3 &&
-                        !contactSearch.includes('@') &&
+                      ? contactSearch.trim().replace(/^@/, '').length < 2 &&
                         contactSearch.replace(/[^0-9]/g, '').length < 6
-                        ? 'Type at least 3 characters of @username, a full email, or a phone number.'
-                        : 'No matching account found.'
+                        ? 'Type at least 2 characters of name/@username/email, or a mobile number.'
+                        : contactSelfMatched
+                          ? 'This matches your own account. Search another user by @username, Gmail, or mobile number.'
+                          : 'No matching account found.'
                       : 'No saved contacts yet. Search by @username, email, or phone above to add someone.'}
                   </div>
                 ) : (
@@ -1979,6 +2075,19 @@ export default function App() {
                     maxLength={VALIDATION_LIMITS.USERNAME_MAX}
                     value={editUsername}
                     onChange={(e) => setEditUsername(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-500 mb-1">
+                    Mobile Number (optional, lets friends find you)
+                  </label>
+                  <input
+                    type="tel"
+                    maxLength={32}
+                    placeholder="e.g. +8801712345678 or 01712345678"
+                    value={editPhoneNumber}
+                    onChange={(e) => setEditPhoneNumber(e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm font-mono"
                   />
                 </div>
@@ -2419,13 +2528,21 @@ export default function App() {
                       </div>
                     );
                   })}
-                  {(newChatSearch.trim() ? newChatResults : knownContactsList).length === 0 && (
-                    <p className="text-xs text-slate-500 py-6 text-center">
-                      {newChatSearch.trim()
-                        ? 'No matching user found. Enter exact @username, email, or phone number.'
-                        : 'No saved contacts yet. Search above by @username, email, or phone number to start a private chat.'}
+                  {newChatSearchError && (
+                    <p className="text-xs text-rose-600 dark:text-rose-400 py-4 text-center">
+                      {newChatSearchError}
                     </p>
                   )}
+                  {!newChatSearchError &&
+                    (newChatSearch.trim() ? newChatResults : knownContactsList).length === 0 && (
+                      <p className="text-xs text-slate-500 py-6 text-center">
+                        {newChatSearch.trim()
+                          ? newChatSelfMatched
+                            ? 'This matches your own account. Search another user by @username, Gmail, or mobile number.'
+                            : 'No matching user found. Enter @username, Gmail, or mobile number.'
+                          : 'No saved contacts yet. Search above by @username, email, or phone number to start a private chat.'}
+                      </p>
+                    )}
                 </>
               )}
             </div>

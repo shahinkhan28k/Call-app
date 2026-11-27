@@ -240,7 +240,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onPendingProfileMeta }) => {
         });
       }
 
-      const fullE164 = `${countryCode}${digits}`;
+      const localDigits = digits.startsWith('0') ? digits.slice(1) : digits;
+      const fullE164 = `${countryCode}${localDigits}`;
       const confirmation = await signInWithPhoneNumber(auth, fullE164, recaptchaRef.current);
       setConfirmationResult(confirmation);
       setInfoMsg(`SMS verification code sent to ${fullE164}.`);

@@ -329,7 +329,7 @@ service cloud.firestore {
 
     match /userDirectory/{userId} {
       allow get: if isValidId(userId) && isSignedIn();
-      allow list: if isSignedIn() && (resource.data.accountStatus == 'active' || isAdmin());
+      allow list: if isAdmin() || (isSignedIn() && request.query.limit != null && request.query.limit <= 15);
       allow create: if isValidId(userId)
         && isVerifiedUser()
         && isValidDirectoryEntry(incoming())
