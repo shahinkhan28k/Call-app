@@ -12,10 +12,13 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
+  limit,
   onSnapshot,
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
 } from 'firebase/firestore';
@@ -98,8 +101,9 @@ export default function App() {
   const [myPrivateKey, setMyPrivateKey] = useState<CryptoKey | null>(null);
   const [myPublicJwk, setMyPublicJwk] = useState<string>('');
 
-  const [directory, setDirectory] = useState<UserDirectoryEntry[]>([]);
+  const [peerProfiles, setPeerProfiles] = useState<Record<string, UserDirectoryEntry>>({});
   const [chats, setChats] = useState<ChatDoc[]>([]);
+  const [optimisticChats, setOptimisticChats] = useState<Record<string, ChatDoc>>({});
   const [calls, setCalls] = useState<CallDoc[]>([]);
   const [contacts, setContacts] = useState<ContactDoc[]>([]);
   const [blockedUsers, setBlockedUsers] = useState<BlockedUserDoc[]>([]);
@@ -107,11 +111,18 @@ export default function App() {
 
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [activeCall, setActiveCall] = useState<CallDoc | null>(null);
+  const [autoAcceptCallId, setAutoAcceptCallId] = useState<string | null>(null);
 
   const [chatSearch, setChatSearch] = useState('');
   const [contactSearch, setContactSearch] = useState('');
+  const [contactSearchResults, setContactSearchResults] = useState<UserDirectoryEntry[]>([]);
+  const [contactSearching, setContactSearching] = useState(false);
+  const [newChatSearch, setNewChatSearch] = useState('');
+  const [newChatResults, setNewChatResults] = useState<UserDirectoryEntry[]>([]);
+  const [newChatSearching, setNewChatSearching] = useState(false);
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const notifiedCallIdsRef = useRef<Set<string>>(new Set());
 
   // Settings form state
   const [editFullName, setEditFullName] = useState('');
@@ -194,8 +205,8 @@ export default function App() {
             onlineStatus: 'online',
             lastSeen: serverTimestamp(),
             accountStatus: 'active',
-            showEmail: false,
-            showPhone: false,
+            showEmail: Boolean(firebaseUser.email),
+            showPhone: Boolean(firebaseUser.phoneNumber),
             showOnlineStatus: true,
             readReceipts: true,
             notificationsEnabled: true,
@@ -215,8 +226,8 @@ export default function App() {
             onlineStatus: 'online',
             lastSeen: serverTimestamp(),
             accountStatus: 'active',
-            discoverableEmail: '',
-            discoverablePhone: '',
+            discoverableEmail: (firebaseUser.email || '').toLowerCase(),
+            discoverablePhone: firebaseUser.phoneNumber || '',
             publicKeyJwk: keyResult.publicKeyJwkString,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -231,6 +242,10 @@ export default function App() {
           await updateDoc(dirRef, {
             onlineStatus: existing.showOnlineStatus === false ? 'offline' : 'online',
             lastSeen: serverTimestamp(),
+            discoverableEmail:
+              existing.showEmail !== false ? (existing.email || firebaseUser.email || '').toLowerCase() : '',
+            discoverablePhone:
+              existing.showPhone !== false ? existing.phoneNumber || firebaseUser.phoneNumber || '' : '',
             publicKeyJwk: keyResult.publicKeyJwkString,
             updatedAt: serverTimestamp(),
           });
@@ -272,7 +287,12 @@ export default function App() {
     };
   }, [firebaseUser, isVerifiedSession, pendingMeta]);
 
-  // Attach real-time Firestore listeners once verified
+  // Keep Android background keep-alive foreground service aligned with signed-in session
+  useEffect(() => {
+    window.ClaroAndroid?.setSignedIn?.(Boolean(firebaseUser && isVerifiedSession));
+  }, [firebaseUser, isVerifiedSession]);
+
+  // Attach real-time Firestore listeners once verified (no public directory dump)
   useEffect(() => {
     if (!firebaseUser || !isVerifiedSession) return;
     const uid = firebaseUser.uid;
@@ -292,14 +312,6 @@ export default function App() {
         }
       },
       (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}`)
-    );
-
-    const unsubDir = onSnapshot(
-      query(collection(db, 'userDirectory'), where('accountStatus', '==', 'active')),
-      (snap) => {
-        setDirectory(snap.docs.map((d) => d.data() as UserDirectoryEntry));
-      },
-      (err) => handleFirestoreError(err, OperationType.LIST, 'userDirectory')
     );
 
     const unsubChats = onSnapshot(
@@ -327,6 +339,58 @@ export default function App() {
         const live = list.find((c) => c.callStatus === 'ringing' || c.callStatus === 'connected');
         if (live) {
           setActiveCall(live);
+          if (live.callStatus === 'ringing' && live.receiverId === uid) {
+            if (!notifiedCallIdsRef.current.has(live.callId)) {
+              notifiedCallIdsRef.current.add(live.callId);
+              void (async () => {
+                let callerName = 'Claro Contact';
+                try {
+                  const callerSnap = await getDoc(doc(db, 'userDirectory', live.callerId));
+                  if (callerSnap.exists()) {
+                    const callerData = callerSnap.data() as UserDirectoryEntry;
+                    callerName = callerData.fullName || callerName;
+                    setPeerProfiles((prev) => ({ ...prev, [callerData.uid]: callerData }));
+                  }
+                } catch {
+                  // Ignore caller lookup failure
+                }
+                window.ClaroAndroid?.showIncomingCallNotification?.(
+                  live.callId,
+                  callerName,
+                  live.callType
+                );
+                if (
+                  'Notification' in window &&
+                  Notification.permission === 'granted' &&
+                  document.hidden
+                ) {
+                  try {
+                    const n = new Notification(`Incoming ${live.callType} call`, {
+                      body: `${callerName} is calling you on Claro`,
+                      tag: `call_${live.callId}`,
+                      requireInteraction: true,
+                    });
+                    n.onclick = () => {
+                      window.focus();
+                      n.close();
+                    };
+                  } catch {
+                    // Ignore browser notification errors
+                  }
+                }
+              })();
+            }
+          } else if (live.callStatus !== 'ringing') {
+            window.ClaroAndroid?.dismissIncomingCallNotification?.(live.callId);
+          }
+        } else {
+          setActiveCall((prev) => {
+            if (prev) {
+              window.ClaroAndroid?.dismissIncomingCallNotification?.(prev.callId);
+            }
+            return null;
+          });
+          setAutoAcceptCallId(null);
         }
       },
       (err) => handleFirestoreError(err, OperationType.LIST, 'calls')
@@ -364,7 +428,6 @@ export default function App() {
 
     return () => {
       unsubProfile();
-      unsubDir();
       unsubChats();
       unsubCalls();
       unsubContacts();
@@ -372,6 +435,242 @@ export default function App() {
       unsubNotifs();
     };
   }, [firebaseUser, isVerifiedSession]);
+
+  // Subscribe individually ONLY to known peers (saved contacts, chat peers, call peers, blocked users)
+  const knownPeerKey = useMemo(() => {
+    if (!firebaseUser) return '';
+    const uids = new Set<string>();
+    for (const c of contacts) uids.add(c.contactUserId);
+    for (const ch of chats) {
+      uids.add(ch.participantA === firebaseUser.uid ? ch.participantB : ch.participantA);
+    }
+    for (const ca of calls) {
+      uids.add(ca.callerId === firebaseUser.uid ? ca.receiverId : ca.callerId);
+    }
+    for (const b of blockedUsers) uids.add(b.blockedUserId);
+    uids.delete(firebaseUser.uid);
+    return Array.from(uids).sort().join(',');
+  }, [blockedUsers, calls, chats, contacts, firebaseUser]);
+
+  useEffect(() => {
+    if (!firebaseUser || !isVerifiedSession || !knownPeerKey) return;
+    const uids = knownPeerKey.split(',').filter(Boolean);
+    const unsubs = uids.map((peerUid) =>
+      onSnapshot(
+        doc(db, 'userDirectory', peerUid),
+        (snap) => {
+          if (snap.exists()) {
+            const entry = snap.data() as UserDirectoryEntry;
+            setPeerProfiles((prev) => ({ ...prev, [peerUid]: entry }));
+          }
+        },
+        () => {
+          // Ignore single peer read issues
+        }
+      )
+    );
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [firebaseUser, isVerifiedSession, knownPeerKey]);
+
+  // Handle Answer / Decline taps directly from the Android incoming call heads-up notification
+  useEffect(() => {
+    if (!firebaseUser) return;
+    window.__onClaroAndroidCallAction = async (callId: string, action: 'answer' | 'decline') => {
+      window.ClaroAndroid?.dismissIncomingCallNotification?.(callId);
+      if (action === 'decline') {
+        try {
+          await updateDoc(doc(db, 'calls', callId), {
+            callStatus: 'rejected',
+            endedAt: serverTimestamp(),
+            duration: 0,
+            updatedAt: serverTimestamp(),
+          });
+        } catch {
+          // Call may have already ended
+        }
+        setActiveCall((prev) => (prev?.callId === callId ? null : prev));
+        setAutoAcceptCallId(null);
+      } else if (action === 'answer') {
+        setAutoAcceptCallId(callId);
+        try {
+          const snap = await getDoc(doc(db, 'calls', callId));
+          if (snap.exists()) {
+            const callData = snap.data() as CallDoc;
+            if (callData.callStatus === 'ringing' || callData.callStatus === 'connected') {
+              setActiveCall(callData);
+            }
+          }
+        } catch {
+          // Ignore lookup error
+        }
+      }
+    };
+    return () => {
+      window.__onClaroAndroidCallAction = undefined;
+    };
+  }, [firebaseUser]);
+
+  // Targeted privacy-preserving search (only returns matching accounts; never lists all registered users)
+  const searchUsersByQuery = useCallback(
+    async (rawQuery: string): Promise<UserDirectoryEntry[]> => {
+      if (!firebaseUser) return [];
+      const cleaned = rawQuery.trim().replace(/^@/, '');
+      const qLower = cleaned.toLowerCase();
+      const digitsOnly = cleaned.replace(/[^0-9+]/g, '');
+
+      const isEmailQuery = qLower.includes('@') && qLower.includes('.');
+      const isPhoneQuery = digitsOnly.length >= 6;
+      if (qLower.length < 3 && !isEmailQuery && !isPhoneQuery) {
+        return [];
+      }
+
+      const foundMap = new Map<string, UserDirectoryEntry>();
+      const tasks: Array<Promise<void>> = [];
+
+      if (qLower.length >= 3) {
+        const usernameQ = query(
+          collection(db, 'userDirectory'),
+          where('usernameLower', '>=', qLower),
+          where('usernameLower', '<=', `${qLower}\uf8ff`),
+          limit(10)
+        );
+        tasks.push(
+          getDocs(usernameQ)
+            .then((snap) => {
+              snap.docs.forEach((d) => {
+                const entry = d.data() as UserDirectoryEntry;
+                if (entry.uid !== firebaseUser.uid && entry.accountStatus === 'active') {
+                  foundMap.set(entry.uid, entry);
+                }
+              });
+            })
+            .catch(() => {})
+        );
+      }
+
+      if (isEmailQuery) {
+        const emailQ = query(
+          collection(db, 'userDirectory'),
+          where('discoverableEmail', '==', qLower),
+          limit(5)
+        );
+        tasks.push(
+          getDocs(emailQ)
+            .then((snap) => {
+              snap.docs.forEach((d) => {
+                const entry = d.data() as UserDirectoryEntry;
+                if (entry.uid !== firebaseUser.uid && entry.accountStatus === 'active') {
+                  foundMap.set(entry.uid, entry);
+                }
+              });
+            })
+            .catch(() => {})
+        );
+      }
+
+      if (isPhoneQuery) {
+        const candidates = Array.from(
+          new Set([digitsOnly, digitsOnly.startsWith('+') ? digitsOnly : `+${digitsOnly}`])
+        );
+        for (const phoneVal of candidates) {
+          const phoneQ = query(
+            collection(db, 'userDirectory'),
+            where('discoverablePhone', '==', phoneVal),
+            limit(5)
+          );
+          tasks.push(
+            getDocs(phoneQ)
+              .then((snap) => {
+                snap.docs.forEach((d) => {
+                  const entry = d.data() as UserDirectoryEntry;
+                  if (entry.uid !== firebaseUser.uid && entry.accountStatus === 'active') {
+                    foundMap.set(entry.uid, entry);
+                  }
+                });
+              })
+              .catch(() => {})
+          );
+        }
+      }
+
+      // Also match already-added contacts locally by full name
+      for (const c of contacts) {
+        const p = peerProfiles[c.contactUserId];
+        if (
+          p &&
+          p.uid !== firebaseUser.uid &&
+          (p.fullName.toLowerCase().includes(qLower) || p.usernameLower.includes(qLower))
+        ) {
+          foundMap.set(p.uid, p);
+        }
+      }
+
+      await Promise.all(tasks);
+      const list = Array.from(foundMap.values());
+      if (list.length > 0) {
+        setPeerProfiles((prev) => {
+          const next = { ...prev };
+          for (const item of list) next[item.uid] = item;
+          return next;
+        });
+      }
+      return list;
+    },
+    [contacts, firebaseUser, peerProfiles]
+  );
+
+  useEffect(() => {
+    const trimmed = contactSearch.trim();
+    if (!trimmed) {
+      setContactSearchResults([]);
+      setContactSearching(false);
+      return;
+    }
+    let active = true;
+    setContactSearching(true);
+    const timer = window.setTimeout(() => {
+      void searchUsersByQuery(trimmed).then((res) => {
+        if (active) {
+          setContactSearchResults(res);
+          setContactSearching(false);
+        }
+      });
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [contactSearch, searchUsersByQuery]);
+
+  useEffect(() => {
+    if (!showNewChatModal) {
+      setNewChatResults([]);
+      setNewChatSearching(false);
+      return;
+    }
+    const trimmed = newChatSearch.trim();
+    if (!trimmed) {
+      setNewChatResults([]);
+      setNewChatSearching(false);
+      return;
+    }
+    let active = true;
+    setNewChatSearching(true);
+    const timer = window.setTimeout(() => {
+      void searchUsersByQuery(trimmed).then((res) => {
+        if (active) {
+          setNewChatResults(res);
+          setNewChatSearching(false);
+        }
+      });
+    }, 300);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [newChatSearch, searchUsersByQuery, showNewChatModal]);
 
   // Connect real-time WebSocket for fast typing & call signal relay
   useEffect(() => {
@@ -393,14 +692,35 @@ export default function App() {
         try {
           const msg = JSON.parse(String(event.data)) as {
             type?: string;
+            from?: string;
             chatId?: string;
-            payload?: { typing?: boolean };
+            payload?: {
+              typing?: boolean;
+              kind?: string;
+              callId?: string;
+              callerName?: string;
+              callType?: 'audio' | 'video';
+            };
           };
           if (msg.type === 'typing' && msg.chatId) {
             setWsTypingMap((prev) => ({
               ...prev,
               [msg.chatId!]: Boolean(msg.payload?.typing),
             }));
+          } else if (
+            msg.type === 'call_signal' &&
+            msg.payload?.kind === 'incoming_call' &&
+            msg.payload.callId
+          ) {
+            const callId = msg.payload.callId;
+            if (!notifiedCallIdsRef.current.has(callId)) {
+              notifiedCallIdsRef.current.add(callId);
+              window.ClaroAndroid?.showIncomingCallNotification?.(
+                callId,
+                msg.payload.callerName || 'Claro Contact',
+                msg.payload.callType === 'video' ? 'video' : 'audio'
+              );
+            }
           }
         } catch {
           // Ignore malformed WS message
@@ -429,20 +749,83 @@ export default function App() {
 
   const directoryByUid = useMemo(() => {
     const map = new Map<string, UserDirectoryEntry>();
-    for (const u of directory) map.set(u.uid, u);
+    for (const [uid, entry] of Object.entries(peerProfiles)) {
+      map.set(uid, entry);
+    }
     return map;
-  }, [directory]);
+  }, [peerProfiles]);
 
   const blockedSet = useMemo(() => new Set(blockedUsers.map((b) => b.blockedUserId)), [blockedUsers]);
   const contactSet = useMemo(() => new Set(contacts.map((c) => c.contactUserId)), [contacts]);
+  const knownContactsList = useMemo(() => {
+    return contacts
+      .map((c) => directoryByUid.get(c.contactUserId))
+      .filter((u): u is UserDirectoryEntry => Boolean(u && u.accountStatus === 'active'));
+  }, [contacts, directoryByUid]);
+
+  const knownCallPeersList = useMemo(() => {
+    if (!firebaseUser) return [];
+    const seen = new Set<string>();
+    const list: UserDirectoryEntry[] = [];
+    for (const u of knownContactsList) {
+      if (!seen.has(u.uid)) {
+        seen.add(u.uid);
+        list.push(u);
+      }
+    }
+    for (const ch of chats) {
+      const peerUid = ch.participantA === firebaseUser.uid ? ch.participantB : ch.participantA;
+      const p = directoryByUid.get(peerUid);
+      if (p && !seen.has(p.uid)) {
+        seen.add(p.uid);
+        list.push(p);
+      }
+    }
+    return list;
+  }, [chats, directoryByUid, firebaseUser, knownContactsList]);
 
   const openOrCreateChat = async (peer: UserDirectoryEntry) => {
     if (!firebaseUser) return;
+    setPeerProfiles((prev) => ({ ...prev, [peer.uid]: peer }));
     const [pA, pB] = [firebaseUser.uid, peer.uid].sort();
     const chatId = `${pA}_${pB}`;
+
+    const existingLocal = chats.find((c) => c.chatId === chatId) || optimisticChats[chatId];
+    if (existingLocal) {
+      setSelectedChatId(chatId);
+      setActiveTab('chats');
+      setShowNewChatModal(false);
+      return;
+    }
+
     try {
-      const existingSnap = await getDoc(doc(db, 'chats', chatId));
-      if (!existingSnap.exists()) {
+      let existsRemote = false;
+      try {
+        const existingSnap = await getDoc(doc(db, 'chats', chatId));
+        existsRemote = existingSnap.exists();
+        if (existsRemote) {
+          const remoteChat = existingSnap.data() as ChatDoc;
+          setOptimisticChats((prev) => ({ ...prev, [chatId]: remoteChat }));
+        }
+      } catch {
+        // Proceed to create if read failed on missing doc
+      }
+
+      if (!existsRemote) {
+        const draftChat: ChatDoc = {
+          chatId,
+          participantIds: [pA, pB],
+          participantA: pA,
+          participantB: pB,
+          unreadA: 0,
+          unreadB: 0,
+          typingA: false,
+          typingB: false,
+          isE2EE: true,
+          createdAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        };
+        setOptimisticChats((prev) => ({ ...prev, [chatId]: draftChat }));
         await setDoc(doc(db, 'chats', chatId), {
           chatId,
           participantIds: [pA, pB],
@@ -470,6 +853,7 @@ export default function App() {
     if (callType === 'video' && dataMode === 'text_only') {
       return;
     }
+    setPeerProfiles((prev) => ({ ...prev, [peer.uid]: peer }));
     const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const callPayload = {
       callId,
@@ -485,6 +869,12 @@ export default function App() {
 
     try {
       await setDoc(doc(db, 'calls', callId), callPayload);
+      sendWsSignal(peer.uid, {
+        kind: 'incoming_call',
+        callId,
+        callerName: userProfile?.fullName || 'Claro Contact',
+        callType,
+      });
     } catch (err) {
       handleFirestoreError(err, OperationType.CREATE, `calls/${callId}`);
     }
@@ -732,7 +1122,10 @@ export default function App() {
     return <AdminDashboard currentUid={firebaseUser.uid} onExit={() => setShowAdmin(false)} />;
   }
 
-  const selectedChat = chats.find((c) => c.chatId === selectedChatId) || null;
+  const selectedChat =
+    chats.find((c) => c.chatId === selectedChatId) ||
+    (selectedChatId ? optimisticChats[selectedChatId] : null) ||
+    null;
   const selectedPeer = selectedChat
     ? directoryByUid.get(
         selectedChat.participantA === firebaseUser.uid
@@ -753,17 +1146,7 @@ export default function App() {
     );
   });
 
-  const filteredDirectory = directory.filter((u) => {
-    if (u.uid === firebaseUser.uid) return false;
-    if (!contactSearch.trim()) return contactSet.has(u.uid);
-    const q = contactSearch.trim().toLowerCase().replace(/^@/, '');
-    return (
-      u.usernameLower.includes(q) ||
-      u.fullName.toLowerCase().includes(q) ||
-      (u.discoverableEmail && u.discoverableEmail.toLowerCase() === q) ||
-      (u.discoverablePhone && u.discoverablePhone.includes(q))
-    );
-  });
+  const filteredDirectory = contactSearch.trim() ? contactSearchResults : knownContactsList;
 
   const unreadNotifications = notifications.filter((n) => !n.readStatus).length;
 
@@ -1083,21 +1466,24 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                {directory.filter((u) => u.uid !== firebaseUser.uid).length === 0 ? (
+                {knownCallPeersList.length === 0 ? (
                   <p className="text-xs text-slate-500">
-                    No other contacts available yet. Add or invite another Claro user to call.
+                    No contacts added yet. Search and add someone in Contacts to start audio or video calls.
                   </p>
                 ) : (
                   <div className="space-y-2">
-                    {directory
-                      .filter((u) => u.uid !== firebaseUser.uid)
-                      .slice(0, 8)
+                    {knownCallPeersList
+                      .slice(0, 12)
                       .map((person) => (
                         <div
                           key={person.uid}
                           className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-800"
                         >
-                          <div className="flex items-center gap-2.5 min-w-0">
+                          <button
+                            type="button"
+                            onClick={() => void openOrCreateChat(person)}
+                            className="flex items-center gap-2.5 min-w-0 flex-1 text-left hover:opacity-80"
+                          >
                             <Avatar
                               name={person.fullName}
                               src={person.profilePicture}
@@ -1111,7 +1497,7 @@ export default function App() {
                                 @{person.username}
                               </div>
                             </div>
-                          </div>
+                          </button>
                           <div className="flex items-center gap-1.5 shrink-0">
                             <button
                               type="button"
@@ -1236,25 +1622,36 @@ export default function App() {
           {/* Tab 3: CONTACTS */}
           {activeTab === 'contacts' && (
             <div className="flex-1 flex flex-col min-h-0">
-              <div className="p-4 border-b border-slate-100 dark:border-slate-800/70">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800/70 space-y-1.5">
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                   <input
                     type="text"
                     value={contactSearch}
                     onChange={(e) => setContactSearch(e.target.value)}
-                    placeholder="Find by @username, name, or permitted email/phone"
+                    placeholder="Search @username, email, or phone to find & add"
                     className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
+                <p className="text-[11px] text-slate-400 px-1">
+                  Other accounts stay private. Search an exact @username, email, or phone number to add someone you know.
+                </p>
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">
-                {filteredDirectory.length === 0 ? (
+                {contactSearching ? (
+                  <div className="p-8 text-center text-xs text-slate-500">
+                    Searching private directory...
+                  </div>
+                ) : filteredDirectory.length === 0 ? (
                   <div className="p-8 text-center text-xs text-slate-500">
                     {contactSearch.trim()
-                      ? 'No matching users found.'
-                      : 'No saved contacts yet. Type a username or name above to find people on Claro.'}
+                      ? contactSearch.trim().replace(/^@/, '').length < 3 &&
+                        !contactSearch.includes('@') &&
+                        contactSearch.replace(/[^0-9]/g, '').length < 6
+                        ? 'Type at least 3 characters of @username, a full email, or a phone number.'
+                        : 'No matching account found.'
+                      : 'No saved contacts yet. Search by @username, email, or phone above to add someone.'}
                   </div>
                 ) : (
                   filteredDirectory.map((person) => {
@@ -1262,9 +1659,13 @@ export default function App() {
                     return (
                       <div
                         key={person.uid}
-                        className="px-5 py-3.5 flex items-center justify-between gap-3"
+                        className="px-5 py-3.5 flex items-center justify-between gap-3 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => void openOrCreateChat(person)}
+                          className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                        >
                           <Avatar
                             name={person.fullName}
                             src={person.profilePicture}
@@ -1273,12 +1674,14 @@ export default function App() {
                             showPresence
                           />
                           <div className="min-w-0">
-                            <div className="font-semibold text-sm truncate">{person.fullName}</div>
+                            <div className="font-semibold text-sm truncate hover:text-blue-600 dark:hover:text-blue-400">
+                              {person.fullName}
+                            </div>
                             <div className="text-xs font-mono text-slate-500 truncate">
                               @{person.username}
                             </div>
                           </div>
-                        </div>
+                        </button>
 
                         <div className="flex items-center gap-1 shrink-0">
                           {!isSaved ? (
@@ -1674,7 +2077,7 @@ export default function App() {
               myPrivateKey={myPrivateKey}
               peer={selectedPeer}
               isBlocked={Boolean(selectedPeer && blockedSet.has(selectedPeer.uid))}
-              allContacts={directory}
+              allContacts={knownContactsList}
               onBackMobile={() => setSelectedChatId(null)}
               onStartCall={handleStartCall}
               onToggleBlock={handleToggleBlock}
@@ -1786,7 +2189,7 @@ export default function App() {
         </nav>
       )}
 
-      {/* New Chat Contact Picker Modal */}
+      {/* New Chat Contact Picker Modal (Private Search + Added Contacts Only) */}
       {showNewChatModal && (
         <div className="fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-md p-5 space-y-4">
@@ -1796,33 +2199,65 @@ export default function App() {
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+              <input
+                type="text"
+                value={newChatSearch}
+                onChange={(e) => setNewChatSearch(e.target.value)}
+                placeholder="Search @username, email, or phone..."
+                className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
             <div className="space-y-2 max-h-80 overflow-y-auto">
-              {directory
-                .filter((u) => u.uid !== firebaseUser.uid)
-                .map((u) => (
-                  <button
-                    key={u.uid}
-                    type="button"
-                    onClick={() => void openOrCreateChat(u)}
-                    className="w-full flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-left"
-                  >
-                    <Avatar
-                      name={u.fullName}
-                      src={u.profilePicture}
-                      size="sm"
-                      onlineStatus={u.onlineStatus}
-                      showPresence
-                    />
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium truncate">{u.fullName}</div>
-                      <div className="text-xs font-mono text-slate-500 truncate">@{u.username}</div>
-                    </div>
-                  </button>
-                ))}
-              {directory.filter((u) => u.uid !== firebaseUser.uid).length === 0 && (
-                <p className="text-xs text-slate-500 py-6 text-center">
-                  No other registered users in directory yet. Sign in from a second browser or account to test real-time 1:1 messaging and WebRTC calls.
-                </p>
+              {newChatSearching ? (
+                <p className="text-xs text-slate-500 py-6 text-center">Searching...</p>
+              ) : (
+                <>
+                  {(newChatSearch.trim() ? newChatResults : knownContactsList).map((u) => {
+                    const isSaved = contactSet.has(u.uid);
+                    return (
+                      <div
+                        key={u.uid}
+                        className="w-full flex items-center justify-between gap-2 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => void openOrCreateChat(u)}
+                          className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                        >
+                          <Avatar
+                            name={u.fullName}
+                            src={u.profilePicture}
+                            size="sm"
+                            onlineStatus={u.onlineStatus}
+                            showPresence
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">{u.fullName}</div>
+                            <div className="text-xs font-mono text-slate-500 truncate">@{u.username}</div>
+                          </div>
+                        </button>
+                        {!isSaved && (
+                          <button
+                            type="button"
+                            onClick={() => void handleAddContact(u)}
+                            className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 text-xs font-medium hover:bg-white dark:hover:bg-slate-900 shrink-0"
+                          >
+                            Add
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {(newChatSearch.trim() ? newChatResults : knownContactsList).length === 0 && (
+                    <p className="text-xs text-slate-500 py-6 text-center">
+                      {newChatSearch.trim()
+                        ? 'No matching user found. Enter exact @username, email, or phone number.'
+                        : 'No saved contacts yet. Search above by @username, email, or phone number to start a private chat.'}
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -1839,7 +2274,12 @@ export default function App() {
               activeCall.callerId === firebaseUser.uid ? activeCall.receiverId : activeCall.callerId
             ) || null
           }
-          onClose={() => setActiveCall(null)}
+          autoAccept={autoAcceptCallId === activeCall.callId}
+          onClose={() => {
+            window.ClaroAndroid?.dismissIncomingCallNotification?.(activeCall.callId);
+            setActiveCall(null);
+            setAutoAcceptCallId(null);
+          }}
           sendWsSignal={sendWsSignal}
         />
       )}

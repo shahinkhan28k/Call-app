@@ -359,9 +359,15 @@ service cloud.firestore {
 
     match /chats/{chatId} {
       allow get: if isValidId(chatId) && isSignedIn() && (
-        request.auth.uid == existing().participantA ||
-        request.auth.uid == existing().participantB ||
-        isAdmin()
+        (resource == null && (
+          chatId.matches('^' + request.auth.uid + '_[a-zA-Z0-9_\\-]+$') ||
+          chatId.matches('^[a-zA-Z0-9_\\-]+_' + request.auth.uid + '$')
+        )) ||
+        (resource != null && (
+          request.auth.uid == existing().participantA ||
+          request.auth.uid == existing().participantB ||
+          isAdmin()
+        ))
       );
       allow list: if isSignedIn() && (
         request.auth.uid == resource.data.participantA ||

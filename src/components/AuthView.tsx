@@ -39,9 +39,17 @@ declare global {
         mimeType: string,
         base64Data: string
       ) => void;
+      setSignedIn?: (signedIn: boolean) => void;
+      showIncomingCallNotification?: (
+        callId: string,
+        callerName: string,
+        callType: 'audio' | 'video'
+      ) => void;
+      dismissIncomingCallNotification?: (callId: string) => void;
     };
     __onClaroAndroidAccountResult?: (result: AndroidBridgeResult) => void;
     __onClaroAndroidUploadResult?: (uploadId: string, status: number, body: string) => void;
+    __onClaroAndroidCallAction?: (callId: string, action: 'answer' | 'decline') => void;
   }
 }
 

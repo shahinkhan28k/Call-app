@@ -148,7 +148,7 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
                 Claro Android (.APK) &amp; Google Play Store (.AAB) Downloads
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Connected to {RENDER_BACKEND_ORIGIN} ({releaseInfo?.packageName || 'com.claro.messenger'} · v{releaseInfo?.versionName || '1.0.4'} · Target SDK {releaseInfo?.targetSdk || 35})
+                Connected to {RENDER_BACKEND_ORIGIN} ({releaseInfo?.packageName || 'com.claro.messenger'} · v{releaseInfo?.versionName || '1.0.5'} · Target SDK {releaseInfo?.targetSdk || 35})
               </p>
             </div>
           </div>
@@ -186,22 +186,22 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
                   ) : null}
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
-                  Self-contained installable Android package (<span className="font-mono">claro-v1.0.4.apk</span>) connected directly to <span className="font-mono">claro-calls.onrender.com</span> with native device Gmail chooser &amp; WebRTC HD Calls.
+                  Self-contained installable Android package (<span className="font-mono">claro-v1.0.5.apk</span>) connected directly to <span className="font-mono">claro-calls.onrender.com</span> with native device Gmail chooser &amp; WebRTC HD Calls.
                 </p>
               </div>
               <button
                 type="button"
                 disabled={downloadingType !== null}
                 onClick={() =>
-                  void triggerBinaryDownload('/api/download-apk', 'claro-v1.0.4.apk', 'apk')
+                  void triggerBinaryDownload('/api/download-apk', 'claro-v1.0.5.apk', 'apk')
                 }
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
               >
                 <Download className="w-4 h-4" />
                 <span>
                   {downloadingType === 'apk'
-                    ? 'Downloading claro-v1.0.4.apk...'
-                    : 'Download APK (claro-v1.0.4.apk)'}
+                    ? 'Downloading claro-v1.0.5.apk...'
+                    : 'Download APK (claro-v1.0.5.apk)'}
                 </span>
               </button>
             </div>
@@ -221,22 +221,22 @@ export const AndroidSourceModal: React.FC<AndroidSourceModalProps> = ({ onClose 
                   ) : null}
                 </div>
                 <p className="text-xs text-slate-600 dark:text-slate-300 mt-1.5 leading-relaxed">
-                  Signed Android App Bundle (<span className="font-mono">claro-v1.0.4.aab</span>) validated with Google <span className="font-mono">bundletool</span> (Target SDK 35). Upload directly inside Google Play Console.
+                  Signed Android App Bundle (<span className="font-mono">claro-v1.0.5.aab</span>) validated with Google <span className="font-mono">bundletool</span> (Target SDK 35). Upload directly inside Google Play Console.
                 </p>
               </div>
               <button
                 type="button"
                 disabled={downloadingType !== null}
                 onClick={() =>
-                  void triggerBinaryDownload('/api/download-aab', 'claro-v1.0.4.aab', 'aab')
+                  void triggerBinaryDownload('/api/download-aab', 'claro-v1.0.5.aab', 'aab')
                 }
                 className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
               >
                 <Download className="w-4 h-4" />
                 <span>
                   {downloadingType === 'aab'
-                    ? 'Downloading claro-v1.0.4.aab...'
-                    : 'Download Play Store AAB (claro-v1.0.4.aab)'}
+                    ? 'Downloading claro-v1.0.5.aab...'
+                    : 'Download Play Store AAB (claro-v1.0.5.aab)'}
                 </span>
               </button>
             </div>

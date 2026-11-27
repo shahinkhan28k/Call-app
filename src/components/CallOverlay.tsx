@@ -33,6 +33,7 @@ interface CallOverlayProps {
   activeCall: CallDoc;
   currentUid: string;
   peer: UserDirectoryEntry | null;
+  autoAccept?: boolean;
   onClose: () => void;
   sendWsSignal?: (to: string, payload: unknown) => void;
 }
@@ -43,6 +44,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   activeCall,
   currentUid,
   peer,
+  autoAccept = false,
   onClose,
   sendWsSignal,
 }) => {
@@ -54,6 +56,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   const [camOff, setCamOff] = useState(false);
   const [speakerMuted, setSpeakerMuted] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
   const [qualityTier, setQualityTier] = useState<QualityTier>('auto');
   const [networkState, setNetworkState] = useState<'connecting' | 'good' | 'reconnecting'>('connecting');
   const [elapsedSec, setElapsedSec] = useState(0);
@@ -70,6 +73,8 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   const answeredRef = useRef(false);
   const offerSentRef = useRef(false);
   const connectedAtRef = useRef<number | null>(null);
+  const currentDeviceIdRef = useRef<string | null>(null);
+  const facingModeRef = useRef<'user' | 'environment'>('user');
 
   // Sync live call document updates
   useEffect(() => {
@@ -81,6 +86,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
           setCallState(data);
           if (data.callStatus === 'ended' || data.callStatus === 'rejected' || data.callStatus === 'missed') {
             stopRingtone();
+            window.ClaroAndroid?.dismissIncomingCallNotification?.(activeCall.callId);
             cleanupMedia();
             onClose();
           }
@@ -240,13 +246,17 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         },
         video: isVideo
           ? {
-              facingMode,
+              facingMode: facingModeRef.current,
               width: { ideal: 1280 },
               height: { ideal: 720 },
             }
           : false,
       });
       localStreamRef.current = stream;
+      const initialVideoTrack = stream.getVideoTracks()[0];
+      if (initialVideoTrack) {
+        currentDeviceIdRef.current = initialVideoTrack.getSettings().deviceId || null;
+      }
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
@@ -268,7 +278,6 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
     activeCall.receiverId,
     applyAdaptiveBitrate,
     currentUid,
-    facingMode,
     isCaller,
     isVideo,
     qualityTier,
@@ -354,10 +363,11 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   }, [callState.answerSdp, isCaller]);
 
   // Receiver: accept call
-  const handleAcceptCall = async () => {
+  const handleAcceptCall = useCallback(async () => {
     if (answeredRef.current) return;
     answeredRef.current = true;
     stopRingtone();
+    window.ClaroAndroid?.dismissIncomingCallNotification?.(activeCall.callId);
     const pc = await createPeerConnection();
     if (callState.offerSdp) {
       const offer = JSON.parse(callState.offerSdp) as RTCSessionDescriptionInit;
@@ -378,10 +388,18 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
         handleFirestoreError(err, OperationType.UPDATE, `calls/${activeCall.callId}`);
       }
     }
-  };
+  }, [activeCall.callId, callState.offerSdp, createPeerConnection]);
+
+  // Auto-accept when answered directly from Android notification popup
+  useEffect(() => {
+    if (autoAccept && !isCaller && callState.callStatus === 'ringing' && callState.offerSdp && !answeredRef.current) {
+      void handleAcceptCall();
+    }
+  }, [autoAccept, callState.callStatus, callState.offerSdp, handleAcceptCall, isCaller]);
 
   const handleEndOrReject = async () => {
     stopRingtone();
+    window.ClaroAndroid?.dismissIncomingCallNotification?.(activeCall.callId);
     const isUnansweredIncoming = !isCaller && callState.callStatus === 'ringing';
     const isUnansweredOutgoing = isCaller && callState.callStatus === 'ringing';
     const nextStatus = isUnansweredIncoming
@@ -441,27 +459,111 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
   };
 
   const switchCamera = async () => {
-    if (!isVideo || !pcRef.current) return;
-    const nextMode = facingMode === 'user' ? 'environment' : 'user';
-    setFacingMode(nextMode);
+    if (!isVideo || !pcRef.current || isSwitchingCamera) return;
+    setIsSwitchingCamera(true);
+    setMediaError(null);
+    const prevMode = facingModeRef.current;
+    const nextMode: 'user' | 'environment' = prevMode === 'user' ? 'environment' : 'user';
+
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: nextMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-      });
-      const newTrack = newStream.getVideoTracks()[0];
-      const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender && newTrack) {
-        await sender.replaceTrack(newTrack);
+      // Enumerate cameras before stopping active track so labels/deviceIds are available
+      let videoInputs: MediaDeviceInfo[] = [];
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        videoInputs = devices.filter((d) => d.kind === 'videoinput');
+      } catch {
+        // Ignore enumerate errors
       }
+
+      const currentId =
+        currentDeviceIdRef.current ||
+        localStreamRef.current?.getVideoTracks()[0]?.getSettings().deviceId ||
+        null;
+
+      const labelPattern =
+        nextMode === 'environment'
+          ? /back|rear|environment|world/i
+          : /front|user|selfie|face/i;
+
+      let targetDevice = videoInputs.find((d) => labelPattern.test(d.label));
+      if (!targetDevice && videoInputs.length > 1) {
+        targetDevice = videoInputs.find((d) => d.deviceId && d.deviceId !== currentId);
+      }
+
+      // CRITICAL on Android WebView / mobile Chrome: stop existing camera track FIRST so hardware lock is released!
       localStreamRef.current?.getVideoTracks().forEach((t) => t.stop());
-      if (localStreamRef.current && newTrack) {
-        const audioTracks = localStreamRef.current.getAudioTracks();
-        const combined = new MediaStream([...audioTracks, newTrack]);
-        localStreamRef.current = combined;
-        if (localVideoRef.current) localVideoRef.current.srcObject = combined;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = null;
       }
+
+      const attempts: MediaTrackConstraints[] = [];
+      if (targetDevice?.deviceId) {
+        attempts.push({
+          deviceId: { exact: targetDevice.deviceId },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        });
+      }
+      attempts.push({
+        facingMode: { exact: nextMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      });
+      attempts.push({ facingMode: { exact: nextMode } });
+      attempts.push({ facingMode: nextMode });
+
+      let newStream: MediaStream | null = null;
+      for (const videoConstraint of attempts) {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraint });
+          if (newStream.getVideoTracks().length > 0) break;
+        } catch {
+          // Try next constraint
+        }
+      }
+
+      if (!newStream || newStream.getVideoTracks().length === 0) {
+        // Restore previous camera if switching failed
+        const fallbackStream = await navigator.mediaDevices
+          .getUserMedia({ video: { facingMode: prevMode } })
+          .catch(() => null);
+        if (fallbackStream) {
+          const fallbackTrack = fallbackStream.getVideoTracks()[0];
+          const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+          if (sender && fallbackTrack) await sender.replaceTrack(fallbackTrack);
+          const audioTracks = localStreamRef.current?.getAudioTracks() || [];
+          const restored = new MediaStream([...audioTracks, fallbackTrack]);
+          localStreamRef.current = restored;
+          if (localVideoRef.current) localVideoRef.current.srcObject = restored;
+        }
+        setMediaError('Rear/front camera could not be switched on this device.');
+        return;
+      }
+
+      const newTrack = newStream.getVideoTracks()[0];
+      newTrack.enabled = !camOff;
+      currentDeviceIdRef.current = newTrack.getSettings().deviceId || targetDevice?.deviceId || null;
+
+      const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
+      if (sender) {
+        await sender.replaceTrack(newTrack);
+        void applyAdaptiveBitrate(qualityTier);
+      }
+
+      const audioTracks = localStreamRef.current?.getAudioTracks() || [];
+      const combined = new MediaStream([...audioTracks, newTrack]);
+      localStreamRef.current = combined;
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = combined;
+        await localVideoRef.current.play().catch(() => {});
+      }
+
+      facingModeRef.current = nextMode;
+      setFacingMode(nextMode);
     } catch {
-      // Single camera device fallback
+      setMediaError('Could not switch camera.');
+    } finally {
+      setIsSwitchingCamera(false);
     }
   };
 
@@ -611,7 +713,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
             autoPlay
             muted
             playsInline
-            className={`w-full h-full object-cover ${camOff ? 'hidden' : ''}`}
+            className={`w-full h-full object-cover ${facingMode === 'user' ? '-scale-x-100' : ''} ${camOff ? 'hidden' : ''}`}
           />
           {camOff && (
             <div className="w-full h-full flex items-center justify-center text-xs text-slate-400">
@@ -680,11 +782,12 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={switchCamera}
+                  disabled={isSwitchingCamera}
+                  onClick={() => void switchCamera()}
                   aria-label="Switch front or rear camera"
-                  className="w-12 h-12 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition-colors"
+                  className="w-12 h-12 rounded-full bg-white/15 hover:bg-white/25 text-white flex items-center justify-center transition-colors disabled:opacity-50"
                 >
-                  <SwitchCamera className="w-5 h-5" />
+                  <SwitchCamera className={`w-5 h-5 ${isSwitchingCamera ? 'animate-spin' : ''}`} />
                 </button>
               </>
             )}
