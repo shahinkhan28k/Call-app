@@ -2,18 +2,48 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ConfirmationResult,
   createUserWithEmailAndPassword,
+  getRedirectResult,
+  GoogleAuthProvider,
   RecaptchaVerifier,
   reload,
   sendEmailVerification,
   sendPasswordResetEmail,
+  signInWithCredential,
   signInWithEmailAndPassword,
   signInWithPhoneNumber,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   updateProfile,
 } from 'firebase/auth';
 import { ArrowRight, CheckCircle2, Lock, Mail, Phone, ShieldCheck, Smartphone, User } from 'lucide-react';
 import { auth, googleProvider } from '../firebase';
+
+interface AndroidBridgeResult {
+  email?: string;
+  accessToken?: string;
+  cancelled?: boolean;
+  error?: string;
+}
+
+declare global {
+  interface Window {
+    ClaroAndroid?: {
+      pickGoogleAccount?: () => void;
+      closePopups?: () => void;
+      uploadFile?: (
+        uploadId: string,
+        targetUrl: string,
+        bearerToken: string,
+        fileName: string,
+        mimeType: string,
+        base64Data: string
+      ) => void;
+    };
+    __onClaroAndroidAccountResult?: (result: AndroidBridgeResult) => void;
+    __onClaroAndroidUploadResult?: (uploadId: string, status: number, body: string) => void;
+  }
+}
 
 interface AuthViewProps {
   onPendingProfileMeta: (meta: { fullName?: string; username?: string }) => void;
@@ -56,6 +86,10 @@ export const AuthView: React.FC<AuthViewProps> = ({ onPendingProfileMeta }) => {
   const recaptchaRef = useRef<RecaptchaVerifier | null>(null);
 
   useEffect(() => {
+    getRedirectResult(auth).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : 'Google sign-in failed.';
+      setErrorMsg(msg);
+    });
     return () => {
       if (recaptchaRef.current) {
         recaptchaRef.current.clear();
@@ -69,9 +103,48 @@ export const AuthView: React.FC<AuthViewProps> = ({ onPendingProfileMeta }) => {
     setInfoMsg(null);
     setProviderHelp(null);
     setLoading(true);
+
+    if (window.ClaroAndroid?.pickGoogleAccount) {
+      window.__onClaroAndroidAccountResult = async (result: AndroidBridgeResult) => {
+        try {
+          if (result?.cancelled) {
+            setLoading(false);
+            return;
+          }
+          if (result?.accessToken) {
+            const cred = GoogleAuthProvider.credential(null, result.accessToken);
+            await signInWithCredential(auth, cred);
+            setLoading(false);
+            return;
+          }
+          if (result?.email) {
+            googleProvider.setCustomParameters({
+              login_hint: result.email,
+              prompt: 'select_account',
+            });
+          } else {
+            googleProvider.setCustomParameters({ prompt: 'select_account' });
+          }
+          await signInWithRedirect(auth, googleProvider);
+        } catch (err) {
+          window.ClaroAndroid?.closePopups?.();
+          setErrorMsg(err instanceof Error ? err.message : 'Google sign-in failed.');
+          setLoading(false);
+        }
+      };
+      try {
+        window.ClaroAndroid.pickGoogleAccount();
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : 'Could not open Gmail chooser.');
+        setLoading(false);
+      }
+      return;
+    }
+
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
+      window.ClaroAndroid?.closePopups?.();
       const msg = err instanceof Error ? err.message : 'Google sign-in failed.';
       setErrorMsg(msg);
     } finally {

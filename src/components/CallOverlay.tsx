@@ -24,6 +24,7 @@ import {
   Wifi,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import { resolveApiUrl } from '../lib/backend';
 import { startRingtone, stopRingtone } from '../lib/sound';
 import type { CallDoc, UserDirectoryEntry } from '../types';
 import { Avatar } from './Avatar';
@@ -160,7 +161,7 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
       { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
     ];
     try {
-      const res = await fetch('/api/ice-servers');
+      const res = await fetch(resolveApiUrl('/api/ice-servers'));
       if (res.ok) {
         const data = (await res.json()) as { iceServers?: RTCIceServer[] };
         if (data.iceServers?.length) iceServers = data.iceServers;

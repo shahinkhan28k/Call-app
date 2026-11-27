@@ -36,6 +36,7 @@ import {
   X,
 } from 'lucide-react';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import { resolveMediaUrl } from '../lib/backend';
 import { decryptMessageText, encryptMessageText } from '../lib/crypto';
 import { compressImageFile, formatBytes, isSafeMediaUrl, uploadAttachment } from '../lib/media';
 import type { ChatDoc, DataMode, MessageDoc, MessageType, UserDirectoryEntry } from '../types';
@@ -775,9 +776,9 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                       ) : (
                         <>
                           {msg.messageType === 'image' && (
-                            <a href={msg.attachmentUrl} target="_blank" rel="noreferrer">
+                            <a href={resolveMediaUrl(msg.attachmentUrl)} target="_blank" rel="noreferrer">
                               <img
-                                src={msg.attachmentUrl}
+                                src={resolveMediaUrl(msg.attachmentUrl)}
                                 alt={msg.attachmentName || 'Shared image'}
                                 className="max-h-64 rounded-xl object-cover"
                               />
@@ -785,7 +786,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                           )}
                           {msg.messageType === 'video' && (
                             <video
-                              src={msg.attachmentUrl}
+                              src={resolveMediaUrl(msg.attachmentUrl)}
                               controls
                               preload={dataMode === 'saver' ? 'metadata' : 'auto'}
                               className="max-h-64 rounded-xl w-full"
@@ -794,11 +795,11 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                         </>
                       )}
                       {(msg.messageType === 'audio' || msg.messageType === 'voice') && (
-                        <audio src={msg.attachmentUrl} controls className="max-w-full h-9" />
+                        <audio src={resolveMediaUrl(msg.attachmentUrl)} controls className="max-w-full h-9" />
                       )}
                       {msg.messageType === 'document' && (
                         <a
-                          href={msg.attachmentUrl}
+                          href={resolveMediaUrl(msg.attachmentUrl)}
                           download={msg.attachmentName || 'document'}
                           className={`flex items-center gap-2.5 p-2.5 rounded-xl border ${
                             mine

@@ -70,8 +70,76 @@ export async function compressImageFile(
   });
 }
 
-const FALLBACK_API_BASE =
-  'https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app';
+import {
+  isAndroidWebViewRuntime,
+  RENDER_BACKEND_ORIGIN,
+  resolveApiUrl,
+} from './backend';
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const commaIdx = result.indexOf(',');
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () => reject(new Error('Failed to read file for upload'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function uploadViaAndroidBridge(
+  targetUrl: string,
+  token: string,
+  fileName: string,
+  mimeType: string,
+  base64Data: string
+): Promise<UploadedMediaResult> {
+  return new Promise((resolve, reject) => {
+    const bridgeUpload = window.ClaroAndroid?.uploadFile;
+    if (!bridgeUpload) {
+      reject(new Error('Android upload bridge unavailable'));
+      return;
+    }
+
+    const uploadId = `up_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const prevHandler = window.__onClaroAndroidUploadResult;
+    const timeout = window.setTimeout(() => {
+      window.__onClaroAndroidUploadResult = prevHandler;
+      reject(new Error('Upload timed out. Please try again.'));
+    }, 60000);
+
+    window.__onClaroAndroidUploadResult = (id: string, status: number, body: string) => {
+      if (id !== uploadId) {
+        prevHandler?.(id, status, body);
+        return;
+      }
+      window.clearTimeout(timeout);
+      window.__onClaroAndroidUploadResult = prevHandler;
+      if (status >= 200 && status < 300) {
+        try {
+          const parsed = JSON.parse(body) as UploadedMediaResult;
+          if (parsed.url.startsWith('/uploads/')) {
+            parsed.url = `${RENDER_BACKEND_ORIGIN}${parsed.url}`;
+          }
+          resolve(parsed);
+        } catch {
+          reject(new Error('Invalid upload response from server'));
+        }
+      } else {
+        try {
+          const err = JSON.parse(body) as { error?: string };
+          reject(new Error(err.error || `Upload failed (${status})`));
+        } catch {
+          reject(new Error(`Upload failed (${status})`));
+        }
+      }
+    };
+
+    bridgeUpload(uploadId, targetUrl, token, fileName, mimeType, base64Data);
+  });
+}
 
 export async function uploadAttachment(
   fileOrBlob: Blob,
@@ -89,35 +157,47 @@ export async function uploadAttachment(
     'Content-Type': 'application/octet-stream',
   };
 
-  let res = await fetch('/api/upload', {
-    method: 'POST',
-    headers,
-    body: fileOrBlob,
-  });
+  const primaryUrl = resolveApiUrl('/api/upload');
+  const androidRuntime = isAndroidWebViewRuntime();
 
-  if (
-    res.status === 404 &&
-    typeof window !== 'undefined' &&
-    window.location.hostname === 'localhost'
-  ) {
-    res = await fetch(`${FALLBACK_API_BASE}/api/upload`, {
+  try {
+    let res = await fetch(primaryUrl, {
       method: 'POST',
       headers,
       body: fileOrBlob,
     });
-  }
 
-  if (!res.ok) {
-    if (res.status === 404) {
-      throw new Error(
-        'Media upload requires publishing the web backend via Share/Deploy. Text messaging and Audio/Video calls work immediately.'
+    if (res.status === 404 && !primaryUrl.startsWith(RENDER_BACKEND_ORIGIN)) {
+      res = await fetch(`${RENDER_BACKEND_ORIGIN}/api/upload`, {
+        method: 'POST',
+        headers,
+        body: fileOrBlob,
+      });
+    }
+
+    if (res.ok) {
+      const data = (await res.json()) as UploadedMediaResult;
+      if (androidRuntime && data.url.startsWith('/uploads/')) {
+        data.url = `${RENDER_BACKEND_ORIGIN}${data.url}`;
+      }
+      return data;
+    }
+
+    const err = (await res.json().catch(() => ({ error: 'Upload failed' }))) as { error?: string };
+    throw new Error(err.error || `Upload failed (${res.status})`);
+  } catch (err) {
+    if (window.ClaroAndroid?.uploadFile) {
+      const base64 = await blobToBase64(fileOrBlob);
+      return uploadViaAndroidBridge(
+        `${RENDER_BACKEND_ORIGIN}/api/upload`,
+        token,
+        fileName,
+        mimeType,
+        base64
       );
     }
-    const err = (await res.json().catch(() => ({ error: 'Upload failed' }))) as { error?: string };
-    throw new Error(err.error || 'Upload failed');
+    throw err instanceof Error ? err : new Error('Upload failed');
   }
-
-  return (await res.json()) as UploadedMediaResult;
 }
 
 export function formatBytes(bytes?: number): string {

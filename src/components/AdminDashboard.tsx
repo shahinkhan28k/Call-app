@@ -20,6 +20,7 @@ import {
   Users,
 } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+import { resolveApiUrl } from '../lib/backend';
 import type { ReportDoc, ReportStatus, SystemConfigDoc, UserDirectoryEntry } from '../types';
 
 interface AdminDashboardProps {
@@ -97,7 +98,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUid, onEx
     const fetchHealth = async () => {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
-      const res = await fetch('/api/health', {
+      const res = await fetch(resolveApiUrl('/api/health'), {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok && active) {

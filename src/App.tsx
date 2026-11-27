@@ -45,6 +45,7 @@ import {
   X,
 } from 'lucide-react';
 import { auth, db, handleFirestoreError, OperationType } from './firebase';
+import { resolveWsUrl } from './lib/backend';
 import { ensureDeviceKeyPair } from './lib/crypto';
 import { compressImageFile, uploadAttachment } from './lib/media';
 import { playMessageSound } from './lib/sound';
@@ -381,8 +382,7 @@ export default function App() {
     (async () => {
       const token = await firebaseUser.getIdToken();
       if (!active) return;
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+      ws = new WebSocket(resolveWsUrl());
       wsRef.current = ws;
 
       ws.onopen = () => {

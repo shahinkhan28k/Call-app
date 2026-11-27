@@ -1,6 +1,6 @@
 {
-  "packageId": "com.claro.app",
-  "host": "ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app",
+  "packageId": "com.claro.messenger",
+  "host": "claro-calls.onrender.com",
   "name": "Claro",
   "launcherName": "Claro",
   "display": "standalone",
@@ -8,10 +8,10 @@
   "navigationColor": "#FFFFFF",
   "backgroundColor": "#FFFFFF",
   "startUrl": "/",
-  "iconUrl": "https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app/pwa-512x512.png",
-  "maskableIconUrl": "https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app/pwa-maskable-512x512.png",
-  "appVersionName": "1.0.0",
-  "appVersionCode": 1,
+  "iconUrl": "https://claro-calls.onrender.com/pwa-512x512.png",
+  "maskableIconUrl": "https://claro-calls.onrender.com/pwa-maskable-512x512.png",
+  "appVersionName": "1.0.4",
+  "appVersionCode": 5,
   "shortcuts": [],
   "generatorApp": "bubblewrap-cli"
 }

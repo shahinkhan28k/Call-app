@@ -35,7 +35,7 @@
 Because the Claro web app includes a full Web App Manifest and Service Worker, you can also package it directly into a signed `.aab` and `.apk` using Google's Bubblewrap CLI:
 ```bash
 npm install -g @bubblewrap/cli
-bubblewrap init --manifest="https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app/manifest.webmanifest"
+bubblewrap init --manifest="https://claro-calls.onrender.com/manifest.webmanifest"
 bubblewrap build
 ```
 Bubblewrap outputs `app-release-signed.apk` and `app-release-bundle.aab` in the current working folder, ready for Play Console upload.
