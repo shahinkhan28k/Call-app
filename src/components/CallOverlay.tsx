@@ -413,6 +413,11 @@ export const CallOverlay: React.FC<CallOverlayProps> = ({
     cleanupMedia();
 
     try {
+      sendWsSignal?.(isCaller ? activeCall.receiverId : activeCall.callerId, {
+        kind: 'call_ended',
+        callId: activeCall.callId,
+      });
+
       await updateDoc(doc(db, 'calls', activeCall.callId), {
         callStatus: nextStatus,
         endedAt: serverTimestamp(),

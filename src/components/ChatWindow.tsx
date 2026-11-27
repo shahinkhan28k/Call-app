@@ -16,6 +16,7 @@ import {
   Check,
   CheckCheck,
   Copy,
+  Download,
   Edit3,
   FileText,
   Film,
@@ -103,6 +104,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loadedMediaIds, setLoadedMediaIds] = useState<Record<string, boolean>>({});
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
 
   // Voice recording state
   const [recording, setRecording] = useState(false);
@@ -124,6 +126,7 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
     setReplyTarget(null);
     setEditingMsg(null);
     setUploadError(null);
+    setPreviewImage(null);
     const q = query(
       collection(db, 'chats', chat.chatId, 'messages'),
       where('participantIds', 'array-contains', currentUid)
@@ -206,6 +209,17 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
+
+  useEffect(() => {
+    if (!previewImage) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPreviewImage(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [previewImage]);
 
   const visibleMessages = useMemo(() => {
     if (messages.length <= pageLimit) return messages;
@@ -786,13 +800,23 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
                       ) : (
                         <>
                           {msg.messageType === 'image' && (
-                            <a href={resolveMediaUrl(msg.attachmentUrl)} target="_blank" rel="noreferrer">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPreviewImage({
+                                  url: resolveMediaUrl(msg.attachmentUrl!),
+                                  name: msg.attachmentName || 'Shared photo',
+                                })
+                              }
+                              aria-label="Preview image"
+                              className="block text-left rounded-xl overflow-hidden focus:outline-none focus:ring-2 focus:ring-blue-400 cursor-pointer"
+                            >
                               <img
                                 src={resolveMediaUrl(msg.attachmentUrl)}
                                 alt={msg.attachmentName || 'Shared image'}
-                                className="max-h-64 rounded-xl object-cover"
+                                className="max-h-60 max-w-[230px] sm:max-w-[280px] w-auto rounded-xl object-contain bg-black/5"
                               />
-                            </a>
+                            </button>
                           )}
                           {msg.messageType === 'video' && (
                             <video
@@ -1301,6 +1325,50 @@ export const ChatWindow: React.FC<ChatWindowProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {previewImage && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={previewImage.name}
+          onClick={() => setPreviewImage(null)}
+          className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm flex flex-col items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-4xl flex items-center justify-between gap-3 mb-3 px-1 text-white"
+          >
+            <span className="text-xs sm:text-sm font-medium truncate opacity-90">
+              {previewImage.name}
+            </span>
+            <div className="flex items-center gap-2 shrink-0">
+              <a
+                href={previewImage.url}
+                download={previewImage.name}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-medium text-white transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setPreviewImage(null)}
+                aria-label="Close photo preview"
+                className="w-9 h-9 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          <img
+            src={previewImage.url}
+            alt={previewImage.name}
+            onClick={(e) => e.stopPropagation()}
+            className="max-w-[92vw] max-h-[78vh] w-auto h-auto object-contain rounded-xl shadow-2xl select-none"
+          />
         </div>
       )}
     </div>

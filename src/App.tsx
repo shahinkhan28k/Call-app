@@ -142,6 +142,10 @@ export default function App() {
   const [showNewChatModal, setShowNewChatModal] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const notifiedCallIdsRef = useRef<Set<string>>(new Set());
+  const [browserNotifPerm, setBrowserNotifPerm] = useState<string>(() => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return 'unsupported';
+    return Notification.permission;
+  });
 
   // Settings form state
   const [editFullName, setEditFullName] = useState('');
@@ -166,6 +170,72 @@ export default function App() {
   >(new Map());
   contactsRef.current = contacts;
   peerProfilesRef.current = peerProfiles;
+
+  const requestBrowserNotifPermission = useCallback(async () => {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    try {
+      const result = await Notification.requestPermission();
+      setBrowserNotifPerm(result);
+    } catch {
+      // Ignore permission request failure
+    }
+  }, []);
+
+  const notifyIncomingCall = useCallback(
+    (callId: string, callerName: string, callType: 'audio' | 'video', forceUpdate = false) => {
+      if (!forceUpdate && notifiedCallIdsRef.current.has(callId)) return;
+      notifiedCallIdsRef.current.add(callId);
+
+      window.ClaroAndroid?.showIncomingCallNotification?.(callId, callerName, callType);
+
+      if (
+        !window.ClaroAndroid &&
+        typeof window !== 'undefined' &&
+        'Notification' in window &&
+        Notification.permission === 'granted' &&
+        (document.hidden || !document.hasFocus())
+      ) {
+        const title = `Incoming ${callType} call`;
+        const options: NotificationOptions & { vibrate?: number[]; renotify?: boolean } = {
+          body: `${callerName} is calling you on Claro`,
+          tag: `call_${callId}`,
+          icon: '/pwa-192x192.png',
+          badge: '/pwa-192x192.png',
+          requireInteraction: true,
+          renotify: true,
+          vibrate: [300, 150, 300, 150, 300],
+          data: { callId },
+        };
+
+        if ('serviceWorker' in navigator) {
+          void navigator.serviceWorker.ready
+            .then((reg) => reg.showNotification(title, options))
+            .catch(() => {
+              try {
+                const n = new Notification(title, options);
+                n.onclick = () => {
+                  window.focus();
+                  n.close();
+                };
+              } catch {
+                // Ignore Notification constructor errors on mobile browsers
+              }
+            });
+        } else {
+          try {
+            const n = new Notification(title, options);
+            n.onclick = () => {
+              window.focus();
+              n.close();
+            };
+          } catch {
+            // Ignore browser notification errors
+          }
+        }
+      }
+    },
+    []
+  );
 
   // Apply Dark/Light Theme class to <html>
   useEffect(() => {
@@ -494,45 +564,26 @@ export default function App() {
         if (live) {
           setActiveCall(live);
           if (live.callStatus === 'ringing' && live.receiverId === uid) {
-            if (!notifiedCallIdsRef.current.has(live.callId)) {
-              notifiedCallIdsRef.current.add(live.callId);
-              void (async () => {
-                let callerName = 'Claro Contact';
-                try {
-                  const callerSnap = await getDoc(doc(db, 'userDirectory', live.callerId));
+            const cachedCallerName = peerProfilesRef.current[live.callerId]?.fullName;
+            notifyIncomingCall(
+              live.callId,
+              cachedCallerName || 'Claro Contact',
+              live.callType
+            );
+            if (!cachedCallerName) {
+              void getDoc(doc(db, 'userDirectory', live.callerId))
+                .then((callerSnap) => {
                   if (callerSnap.exists()) {
                     const callerData = callerSnap.data() as UserDirectoryEntry;
-                    callerName = callerData.fullName || callerName;
                     setPeerProfiles((prev) => ({ ...prev, [callerData.uid]: callerData }));
+                    if (callerData.fullName) {
+                      notifyIncomingCall(live.callId, callerData.fullName, live.callType, true);
+                    }
                   }
-                } catch {
+                })
+                .catch(() => {
                   // Ignore caller lookup failure
-                }
-                window.ClaroAndroid?.showIncomingCallNotification?.(
-                  live.callId,
-                  callerName,
-                  live.callType
-                );
-                if (
-                  'Notification' in window &&
-                  Notification.permission === 'granted' &&
-                  document.hidden
-                ) {
-                  try {
-                    const n = new Notification(`Incoming ${live.callType} call`, {
-                      body: `${callerName} is calling you on Claro`,
-                      tag: `call_${live.callId}`,
-                      requireInteraction: true,
-                    });
-                    n.onclick = () => {
-                      window.focus();
-                      n.close();
-                    };
-                  } catch {
-                    // Ignore browser notification errors
-                  }
-                }
-              })();
+                });
             }
           } else if (live.callStatus !== 'ringing') {
             window.ClaroAndroid?.dismissIncomingCallNotification?.(live.callId);
@@ -587,6 +638,44 @@ export default function App() {
       unsubContacts();
       unsubBlocked();
       unsubNotifs();
+    };
+  }, [firebaseUser, isVerifiedSession, notifyIncomingCall]);
+
+  // Focus active incoming call when user taps a PWA/browser notification
+  useEffect(() => {
+    if (!firebaseUser || !isVerifiedSession) return;
+    const focusCallById = async (callId: string) => {
+      if (!callId) return;
+      try {
+        const snap = await getDoc(doc(db, 'calls', callId));
+        if (snap.exists()) {
+          const callData = snap.data() as CallDoc;
+          if (callData.callStatus === 'ringing' || callData.callStatus === 'connected') {
+            setActiveCall(callData);
+          }
+        }
+      } catch {
+        // Ignore lookup errors
+      }
+    };
+
+    const params = new URLSearchParams(window.location.search);
+    const paramCallId = params.get('callId');
+    if (paramCallId) {
+      void focusCallById(paramCallId);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    if (!('serviceWorker' in navigator)) return;
+    const onSwMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; callId?: string } | undefined;
+      if (data?.type === 'CLARO_FOCUS_CALL' && data.callId) {
+        void focusCallById(data.callId);
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onSwMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', onSwMessage);
     };
   }, [firebaseUser, isVerifiedSession]);
 
@@ -967,68 +1056,151 @@ export default function App() {
     };
   }, [matchLocalKnownUsers, newChatSearch, searchUsersByQuery, showNewChatModal]);
 
-  // Connect real-time WebSocket for fast typing & call signal relay
+  // Connect resilient auto-reconnecting WebSocket for typing & instant background call signaling
   useEffect(() => {
     if (!firebaseUser || !isVerifiedSession) return;
     let active = true;
     let ws: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let pingTimer: number | null = null;
+    let attempt = 0;
 
-    (async () => {
-      const token = await firebaseUser.getIdToken();
+    const connectWs = async () => {
       if (!active) return;
-      ws = new WebSocket(resolveWsUrl());
-      wsRef.current = ws;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      try {
+        const token = await firebaseUser.getIdToken();
+        if (!active) return;
+        const nextWs = new WebSocket(resolveWsUrl());
+        ws = nextWs;
+        wsRef.current = nextWs;
 
-      ws.onopen = () => {
-        ws?.send(JSON.stringify({ type: 'auth', token }));
-      };
+        nextWs.onopen = () => {
+          attempt = 0;
+          nextWs.send(JSON.stringify({ type: 'auth', token }));
+        };
 
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(String(event.data)) as {
-            type?: string;
-            from?: string;
-            chatId?: string;
-            payload?: {
-              typing?: boolean;
-              kind?: string;
-              callId?: string;
-              callerName?: string;
-              callType?: 'audio' | 'video';
+        nextWs.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(String(event.data)) as {
+              type?: string;
+              from?: string;
+              chatId?: string;
+              payload?: {
+                typing?: boolean;
+                kind?: string;
+                callId?: string;
+                callerName?: string;
+                callType?: 'audio' | 'video';
+              };
             };
-          };
-          if (msg.type === 'typing' && msg.chatId) {
-            setWsTypingMap((prev) => ({
-              ...prev,
-              [msg.chatId!]: Boolean(msg.payload?.typing),
-            }));
-          } else if (
-            msg.type === 'call_signal' &&
-            msg.payload?.kind === 'incoming_call' &&
-            msg.payload.callId
-          ) {
-            const callId = msg.payload.callId;
-            if (!notifiedCallIdsRef.current.has(callId)) {
-              notifiedCallIdsRef.current.add(callId);
-              window.ClaroAndroid?.showIncomingCallNotification?.(
-                callId,
-                msg.payload.callerName || 'Claro Contact',
-                msg.payload.callType === 'video' ? 'video' : 'audio'
+            if (msg.type === 'typing' && msg.chatId) {
+              setWsTypingMap((prev) => ({
+                ...prev,
+                [msg.chatId!]: Boolean(msg.payload?.typing),
+              }));
+            } else if (
+              msg.type === 'call_signal' &&
+              msg.payload?.kind === 'incoming_call' &&
+              msg.payload.callId
+            ) {
+              const callId = msg.payload.callId;
+              const callType = msg.payload.callType === 'video' ? 'video' : 'audio';
+              const callerName =
+                msg.payload.callerName ||
+                (msg.from ? peerProfilesRef.current[msg.from]?.fullName : undefined) ||
+                'Claro Contact';
+              notifyIncomingCall(callId, callerName, callType);
+
+              // Also fetch Firestore call doc directly so call UI pops up even if Firestore stream lags
+              void getDoc(doc(db, 'calls', callId))
+                .then((snap) => {
+                  if (!active || !snap.exists()) return;
+                  const callData = snap.data() as CallDoc;
+                  if (callData.callStatus === 'ringing') {
+                    setActiveCall((prev) => prev || callData);
+                  }
+                })
+                .catch(() => {});
+            } else if (
+              msg.type === 'call_signal' &&
+              msg.payload?.kind === 'call_ended' &&
+              msg.payload.callId
+            ) {
+              const endedId = msg.payload.callId;
+              window.ClaroAndroid?.dismissIncomingCallNotification?.(endedId);
+              setActiveCall((prev) =>
+                prev && prev.callId === endedId && prev.callStatus === 'ringing' ? null : prev
               );
             }
+          } catch {
+            // Ignore malformed WS message
           }
-        } catch {
-          // Ignore malformed WS message
-        }
-      };
-    })();
+        };
+
+        nextWs.onclose = () => {
+          if (wsRef.current === nextWs) {
+            wsRef.current = null;
+          }
+          if (!active) return;
+          const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+          attempt += 1;
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = window.setTimeout(() => {
+            void connectWs();
+          }, delay);
+        };
+
+        nextWs.onerror = () => {
+          // Close triggers onclose reconnect cleanly
+          if (nextWs.readyState === WebSocket.OPEN || nextWs.readyState === WebSocket.CONNECTING) {
+            nextWs.close();
+          }
+        };
+      } catch {
+        if (!active) return;
+        const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+        attempt += 1;
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = window.setTimeout(() => {
+          void connectWs();
+        }, delay);
+      }
+    };
+
+    const handleNetworkOrWakeup = () => {
+      if (!active || navigator.onLine === false) return;
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        attempt = 0;
+        void connectWs();
+      }
+    };
+
+    window.addEventListener('online', handleNetworkOrWakeup);
+    document.addEventListener('visibilitychange', handleNetworkOrWakeup);
+
+    pingTimer = window.setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'ping' }));
+      } else if (navigator.onLine !== false) {
+        void connectWs();
+      }
+    }, 20_000);
+
+    void connectWs();
 
     return () => {
       active = false;
+      window.removeEventListener('online', handleNetworkOrWakeup);
+      document.removeEventListener('visibilitychange', handleNetworkOrWakeup);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (pingTimer) clearInterval(pingTimer);
       ws?.close();
       wsRef.current = null;
     };
-  }, [firebaseUser, isVerifiedSession]);
+  }, [firebaseUser, isVerifiedSession, notifyIncomingCall]);
 
   const sendWsTyping = useCallback((to: string, chatId: string, typing: boolean) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1709,6 +1881,20 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                {!window.ClaroAndroid && browserNotifPerm === 'default' && (
+                  <div className="flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60">
+                    <span className="text-[11px] text-blue-800 dark:text-blue-200 font-medium">
+                      Allow call alerts when the app is in background
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void requestBrowserNotifPermission()}
+                      className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold shrink-0"
+                    >
+                      Enable
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">

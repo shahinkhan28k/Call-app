@@ -250,6 +250,21 @@ app.get('/uploads/:filename', (req, res) => {
 // Connected WebSocket map
 const wsClients = new Map<string, Set<WebSocket>>();
 
+interface PendingCallSignal {
+  from: string;
+  chatId: string;
+  payload: {
+    kind: string;
+    callId: string;
+    callerName?: string;
+    callType?: 'audio' | 'video';
+  };
+  expiresAt: number;
+}
+
+const PENDING_CALL_TTL_MS = 45_000;
+const pendingCallSignals = new Map<string, PendingCallSignal[]>();
+
 // Server & Call Infrastructure Health (detailed telemetry strictly for verified Admin)
 app.get('/api/health', async (req, res) => {
   const token = extractBearerToken(req);
@@ -365,8 +380,8 @@ app.get('/api/android-releases', async (req, res) => {
 
   res.json({
     packageName: 'com.claro.messenger',
-    versionName: '1.0.8',
-    versionCode: 9,
+    versionName: '1.0.9',
+    versionCode: 10,
     minSdk: 24,
     targetSdk: 35,
     apkReady: fs.existsSync(apkPath),
@@ -392,7 +407,7 @@ app.get('/api/download-apk', async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.8.apk"');
+  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.9.apk"');
   res.sendFile(apkPath);
 });
 
@@ -412,7 +427,7 @@ app.get('/api/download-aab', async (req, res) => {
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', 'application/octet-stream');
-  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.8.aab"');
+  res.setHeader('Content-Disposition', 'attachment; filename="claro-v1.0.9.aab"');
   res.sendFile(aabPath);
 });
 
@@ -485,6 +500,26 @@ async function startServer() {
           }
           wsClients.get(authedUid)?.add(ws);
           ws.send(JSON.stringify({ type: 'auth_ok', uid: authedUid }));
+
+          // Deliver any recent unanswered incoming call signals that arrived while socket reconnected
+          const queued = pendingCallSignals.get(authedUid);
+          if (queued && queued.length > 0) {
+            const now = Date.now();
+            const validSignals = queued.filter((item) => item.expiresAt > now);
+            pendingCallSignals.delete(authedUid);
+            for (const item of validSignals) {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'call_signal',
+                    from: item.from,
+                    chatId: item.chatId,
+                    payload: item.payload,
+                  })
+                );
+              }
+            }
+          }
           return;
         }
 
@@ -499,6 +534,42 @@ async function startServer() {
           (msg.type === 'typing' || msg.type === 'call_signal' || msg.type === 'delivery_ack') &&
           typeof msg.to === 'string'
         ) {
+          if (msg.type === 'call_signal' && msg.payload && typeof msg.payload === 'object') {
+            const sigPayload = msg.payload as {
+              kind?: string;
+              callId?: string;
+              callerName?: string;
+              callType?: 'audio' | 'video';
+            };
+            if (sigPayload.kind === 'incoming_call' && sigPayload.callId) {
+              const now = Date.now();
+              const existing = (pendingCallSignals.get(msg.to) || []).filter(
+                (item) => item.expiresAt > now && item.payload.callId !== sigPayload.callId
+              );
+              existing.push({
+                from: authedUid,
+                chatId: msg.chatId || '',
+                payload: {
+                  kind: 'incoming_call',
+                  callId: sigPayload.callId,
+                  callerName: sigPayload.callerName,
+                  callType: sigPayload.callType,
+                },
+                expiresAt: now + PENDING_CALL_TTL_MS,
+              });
+              pendingCallSignals.set(msg.to, existing.slice(-5));
+            } else if (sigPayload.kind === 'call_ended' && sigPayload.callId) {
+              const remaining = (pendingCallSignals.get(msg.to) || []).filter(
+                (item) => item.payload.callId !== sigPayload.callId
+              );
+              if (remaining.length > 0) {
+                pendingCallSignals.set(msg.to, remaining);
+              } else {
+                pendingCallSignals.delete(msg.to);
+              }
+            }
+          }
+
           const targets = wsClients.get(msg.to);
           if (targets) {
             const envelope = JSON.stringify({
