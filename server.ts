@@ -420,7 +420,44 @@ async function startServer() {
   const server = http.createServer(app);
 
   // Real-Time WebSocket Server for presence pings, typing indicators, & fast signaling relay
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+  const viteKeepAliveWss =
+    process.env.NODE_ENV !== 'production' ? new WebSocketServer({ noServer: true }) : null;
+
+  viteKeepAliveWss?.on('connection', (ws) => {
+    try {
+      ws.send(JSON.stringify({ type: 'connected' }));
+    } catch {
+      // Ignore send errors on closing socket
+    }
+    ws.on('error', () => {});
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    try {
+      const pathname = new URL(req.url || '/', 'http://localhost').pathname;
+      if (pathname === '/ws') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          wss.emit('connection', ws, req);
+        });
+        return;
+      }
+
+      const wsProto = String(req.headers['sec-websocket-protocol'] || '');
+      if (
+        viteKeepAliveWss &&
+        (wsProto.includes('vite-hmr') || wsProto.includes('vite-ping'))
+      ) {
+        viteKeepAliveWss.handleUpgrade(req, socket, head, (ws) => {
+          viteKeepAliveWss.emit('connection', ws, req);
+        });
+        return;
+      }
+    } catch {
+      // Fall through to destroy invalid upgrade socket
+    }
+    socket.destroy();
+  });
 
   wss.on('connection', (ws) => {
     let authedUid: string | null = null;
