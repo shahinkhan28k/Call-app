@@ -1,0 +1,17 @@
+{
+  "packageId": "com.claro.app",
+  "host": "ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app",
+  "name": "Claro",
+  "launcherName": "Claro",
+  "display": "standalone",
+  "themeColor": "#2563EB",
+  "navigationColor": "#FFFFFF",
+  "backgroundColor": "#FFFFFF",
+  "startUrl": "/",
+  "iconUrl": "https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app/pwa-512x512.png",
+  "maskableIconUrl": "https://ais-pre-x6vzwrkkfc7urh5uizhj7k-561146321083.asia-southeast1.run.app/pwa-maskable-512x512.png",
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [],
+  "generatorApp": "bubblewrap-cli"
+}

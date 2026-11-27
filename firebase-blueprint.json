@@ -1,0 +1,276 @@
+{
+  "entities": {
+    "UserPrivate": {
+      "title": "UserPrivate",
+      "description": "Private user account profile, PII, and personal preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "username": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-zA-Z0-9_.]+$" },
+        "email": { "type": "string", "maxLength": 160 },
+        "phoneNumber": { "type": "string", "maxLength": 32 },
+        "profilePicture": { "type": "string", "maxLength": 1000 },
+        "about": { "type": "string", "maxLength": 240 },
+        "onlineStatus": { "type": "string", "enum": ["online", "offline", "away"] },
+        "lastSeen": { "type": "string", "format": "date-time" },
+        "accountStatus": { "type": "string", "enum": ["active", "suspended"] },
+        "showEmail": { "type": "boolean" },
+        "showPhone": { "type": "boolean" },
+        "showOnlineStatus": { "type": "boolean" },
+        "readReceipts": { "type": "boolean" },
+        "notificationsEnabled": { "type": "boolean" },
+        "lowDataMode": { "type": "boolean" },
+        "publicKeyJwk": { "type": "string", "maxLength": 2048 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "username", "accountStatus", "createdAt", "updatedAt"]
+    },
+    "UserDirectoryEntry": {
+      "title": "UserDirectoryEntry",
+      "description": "Publicly discoverable profile for signed-in contact search without exposing private PII.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "fullName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "username": { "type": "string", "minLength": 2, "maxLength": 40, "pattern": "^[a-zA-Z0-9_.]+$" },
+        "usernameLower": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "profilePicture": { "type": "string", "maxLength": 1000 },
+        "about": { "type": "string", "maxLength": 240 },
+        "onlineStatus": { "type": "string", "enum": ["online", "offline", "away"] },
+        "lastSeen": { "type": "string", "format": "date-time" },
+        "accountStatus": { "type": "string", "enum": ["active", "suspended"] },
+        "discoverableEmail": { "type": "string", "maxLength": 160 },
+        "discoverablePhone": { "type": "string", "maxLength": 32 },
+        "publicKeyJwk": { "type": "string", "maxLength": 2048 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "fullName", "username", "usernameLower", "accountStatus", "createdAt", "updatedAt"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "One-to-one private conversation metadata.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "participantIds": { "type": "array", "description": "Exactly two participant UIDs." },
+        "participantA": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "participantB": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "lastMessage": { "type": "string", "maxLength": 1000 },
+        "lastMessageType": { "type": "string", "enum": ["text", "image", "video", "audio", "document", "voice", "call_event"] },
+        "lastMessageSenderId": { "type": "string", "maxLength": 128 },
+        "lastMessageTime": { "type": "string", "format": "date-time" },
+        "unreadA": { "type": "integer" },
+        "unreadB": { "type": "integer" },
+        "typingA": { "type": "boolean" },
+        "typingB": { "type": "boolean" },
+        "isE2EE": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "participantIds", "participantA", "participantB", "unreadA", "unreadB", "typingA", "typingB", "isE2EE", "createdAt", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Message document inside a private 1:1 chat.",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "chatId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "receiverId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "participantIds": { "type": "array", "description": "Exactly [senderId, receiverId]." },
+        "messageType": { "type": "string", "enum": ["text", "image", "video", "audio", "document", "voice", "call_event"] },
+        "messageText": { "type": "string", "maxLength": 4000 },
+        "ciphertext": { "type": "string", "maxLength": 8000 },
+        "iv": { "type": "string", "maxLength": 128 },
+        "isEncrypted": { "type": "boolean" },
+        "attachmentUrl": { "type": "string", "maxLength": 1000 },
+        "attachmentName": { "type": "string", "maxLength": 255 },
+        "attachmentSize": { "type": "integer" },
+        "attachmentMime": { "type": "string", "maxLength": 128 },
+        "replyToId": { "type": "string", "maxLength": 128 },
+        "replyPreview": { "type": "string", "maxLength": 240 },
+        "forwardedFrom": { "type": "string", "maxLength": 100 },
+        "deliveryStatus": { "type": "string", "enum": ["sent", "delivered", "read"] },
+        "readStatus": { "type": "boolean" },
+        "edited": { "type": "boolean" },
+        "deletedForEveryone": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["messageId", "chatId", "senderId", "receiverId", "participantIds", "messageType", "messageText", "isEncrypted", "deliveryStatus", "readStatus", "edited", "deletedForEveryone", "createdAt", "updatedAt"]
+    },
+    "Call": {
+      "title": "Call",
+      "description": "WebRTC 1:1 audio or video call signaling and call log record.",
+      "type": "object",
+      "properties": {
+        "callId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "callerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "receiverId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "participantIds": { "type": "array" },
+        "callType": { "type": "string", "enum": ["audio", "video"] },
+        "callStatus": { "type": "string", "enum": ["ringing", "connected", "ended", "rejected", "missed"] },
+        "offerSdp": { "type": "string", "maxLength": 32000 },
+        "answerSdp": { "type": "string", "maxLength": 32000 },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "duration": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["callId", "callerId", "receiverId", "participantIds", "callType", "callStatus", "startedAt", "duration", "updatedAt"]
+    },
+    "IceCandidate": {
+      "title": "IceCandidate",
+      "description": "WebRTC ICE candidate exchanged within an active call.",
+      "type": "object",
+      "properties": {
+        "candidateId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "senderId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "participantIds": { "type": "array" },
+        "candidateJson": { "type": "string", "minLength": 2, "maxLength": 4096 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["candidateId", "senderId", "participantIds", "candidateJson", "createdAt"]
+    },
+    "Contact": {
+      "title": "Contact",
+      "description": "Saved contact relationship.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "contactUserId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "nickname": { "type": "string", "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "contactUserId", "createdAt"]
+    },
+    "BlockedUser": {
+      "title": "BlockedUser",
+      "description": "Blocked user entry.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "blockedUserId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "type": "string", "maxLength": 240 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "blockedUserId", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Abuse report submitted for admin review.",
+      "type": "object",
+      "properties": {
+        "reportId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "reporterId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reportedUserId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "reason": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "details": { "type": "string", "maxLength": 1000 },
+        "status": { "type": "string", "enum": ["pending", "reviewed", "resolved", "dismissed"] },
+        "adminNotes": { "type": "string", "maxLength": 1000 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reportId", "reporterId", "reportedUserId", "reason", "status", "createdAt", "updatedAt"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "In-app notification entry.",
+      "type": "object",
+      "properties": {
+        "notificationId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "body": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "type": { "type": "string", "enum": ["message", "missed_call", "contact", "security", "system"] },
+        "relatedId": { "type": "string", "maxLength": 128 },
+        "readStatus": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["notificationId", "userId", "title", "body", "type", "readStatus", "createdAt", "updatedAt"]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Authorized administrator membership record.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "minLength": 3, "maxLength": 160 },
+        "role": { "type": "string", "enum": ["admin"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    },
+    "SystemConfig": {
+      "title": "SystemConfig",
+      "description": "Global platform configuration managed by admins.",
+      "type": "object",
+      "properties": {
+        "maxFileSizeMb": { "type": "integer" },
+        "stunServerUrl": { "type": "string", "maxLength": 240 },
+        "turnServerUrl": { "type": "string", "maxLength": 240 },
+        "e2eeDefault": { "type": "boolean" },
+        "rateLimitPerMin": { "type": "integer" },
+        "maintenanceMode": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "updatedBy": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["maxFileSizeMb", "stunServerUrl", "e2eeDefault", "rateLimitPerMin", "maintenanceMode", "updatedAt", "updatedBy"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserPrivate" },
+      "description": "Private user account documents containing email, phone number, and settings."
+    },
+    "/userDirectory/{userId}": {
+      "schema": { "$ref": "#/entities/UserDirectoryEntry" },
+      "description": "Discoverable user profiles without private PII unless opted in."
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/Chat" },
+      "description": "1-to-1 private chat rooms."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/Message" },
+      "description": "Messages belonging to a specific private chat."
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/Call" },
+      "description": "1-to-1 audio and video call signaling documents and call logs."
+    },
+    "/calls/{callId}/candidates/{candidateId}": {
+      "schema": { "$ref": "#/entities/IceCandidate" },
+      "description": "WebRTC ICE candidates for a call."
+    },
+    "/contacts/{contactDocId}": {
+      "schema": { "$ref": "#/entities/Contact" },
+      "description": "Saved contacts per user."
+    },
+    "/blockedUsers/{blockId}": {
+      "schema": { "$ref": "#/entities/BlockedUser" },
+      "description": "Blocked user records per user."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "User abuse reports reviewed by administrators."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/Notification" },
+      "description": "Per-user notifications for messages, missed calls, and security alerts."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Authorized admin role registry."
+    },
+    "/systemConfig/{configId}": {
+      "schema": { "$ref": "#/entities/SystemConfig" },
+      "description": "Global platform configuration."
+    }
+  }
+}

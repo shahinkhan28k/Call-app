@@ -1,0 +1,35 @@
+name: Build Claro Release APK & Play Store AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Debug & Release APK + Play Store AAB
+        working-directory: android-source
+        run: |
+          gradle assembleRelease bundleRelease
+
+      - name: Upload Play Store AAB & APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: claro-playstore-builds
+          path: |
+            android-source/app/build/outputs/apk/release/*.apk
+            android-source/app/build/outputs/bundle/release/*.aab

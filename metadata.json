@@ -1,0 +1,6 @@
+{
+  "name": "Claro",
+  "description": "Private 1-to-1 encrypted messaging and HD audio/video calling.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
